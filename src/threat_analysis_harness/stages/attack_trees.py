@@ -52,7 +52,12 @@ class AttackTreeStage:
                     task_id=task_id,
                     task_type=self.task_type,
                     skill_path=self.skill_path,
-                    runtime_prompt=runtime_prompt or _asset_prompt(asset),
+                    runtime_prompt=runtime_prompt
+                    or _asset_prompt(
+                        asset,
+                        task_input=task_input,
+                        context_files=context_files,
+                    ),
                     input_files=tuple([str(task_input)] + [str(path) for path in context_files]),
                     output_path=str(self.layout.attack_trees_raw_dir / f"{task_id}.json"),
                     output_schema=ATTACK_TREE_SCHEMA,
@@ -133,11 +138,24 @@ def combine_attack_tree_outputs(outputs: Sequence[dict[str, Any]]) -> dict[str, 
     }
 
 
-def _asset_prompt(asset: dict[str, Any]) -> str:
+def _asset_prompt(
+    asset: dict[str, Any],
+    *,
+    task_input: str | Path,
+    context_files: Sequence[str | Path] = (),
+) -> str:
     asset_name = asset.get("资产名") or asset.get("asset_name") or "当前价值资产"
+    context_text = (
+        "额外代码上下文文件：" + "、".join(str(path) for path in context_files) + "。"
+        if context_files
+        else "未提供额外代码上下文文件。"
+    )
     return (
         f"请根据 skill 要求，仅针对价值资产“{asset_name}”进行攻击树分析。"
-        "使用输入文件中的高风险模块参考和代码上下文，最终只输出符合 JSON schema 的对象。"
+        f"结构化输入文件：{task_input}，其中 value_asset 是当前价值资产，"
+        "high_risk_modules 是全部最终高风险模块列表；必须读取该文件中的高风险模块后再分析攻击路径。"
+        f"{context_text}"
+        "最终只输出符合 JSON schema 的对象。"
     )
 
 

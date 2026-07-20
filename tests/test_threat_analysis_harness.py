@@ -188,7 +188,11 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                 self.assertTrue(task.input_files)
                 return json.dumps(HIGH_RISK_MODULES, ensure_ascii=False)
             if task.task_type == "attack_tree_by_asset":
-                self.assertTrue(any(path.endswith(".input.json") for path in task.input_files))
+                task_input = next(path for path in task.input_files if path.endswith(".input.json"))
+                self.assertIn(task_input, prompt)
+                self.assertIn("high_risk_modules 是全部最终高风险模块列表", prompt)
+                task_input_payload = json.loads(Path(task_input).read_text(encoding="utf-8"))
+                self.assertEqual(task_input_payload["high_risk_modules"], HIGH_RISK_MODULES)
                 return json.dumps(
                     attack_tree_output(
                         asset_name="用户资料数据",

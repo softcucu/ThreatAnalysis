@@ -84,6 +84,7 @@ def parse_json_output(raw: str) -> Any:
 
 def parse_json_output_for_schema(raw: str, schema: Mapping[str, Any]) -> Any:
     values, errors = _parse_json_values(raw)
+    values.extend(_array_values_from_bare_items(raw, schema))
     validation_errors: list[OutputValidationError] = []
     for value in values:
         try:
@@ -167,6 +168,65 @@ def _extract_json_values(text: str) -> tuple[list[Any], list[json.JSONDecodeErro
     if not values and not errors:
         errors.append(json.JSONDecodeError("No JSON object or array found", text, 0))
     return values, errors
+
+
+def _array_values_from_bare_items(raw: str, schema: Mapping[str, Any]) -> list[list[Any]]:
+    if not _schema_type_includes(schema, "array"):
+        return []
+
+    text = raw.strip().lstrip("\ufeff").strip()
+    arrays: list[list[Any]] = []
+    for candidate in _json_text_candidates(text):
+        arrays.extend(_parse_bare_json_item_sequences(candidate))
+    return arrays
+
+
+def _schema_type_includes(schema: Mapping[str, Any], expected: str) -> bool:
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        return expected in schema_type
+    return schema_type == expected
+
+
+def _parse_bare_json_item_sequences(text: str) -> list[list[Any]]:
+    decoder = json.JSONDecoder()
+    arrays: list[list[Any]] = []
+    index = 0
+    while index < len(text):
+        if text[index] not in "{[":
+            index += 1
+            continue
+
+        values: list[Any] = []
+        current = index
+        end = index
+        while current < len(text) and text[current] in "{[":
+            try:
+                value, end = decoder.raw_decode(text, current)
+            except json.JSONDecodeError:
+                break
+            values.append(value)
+
+            separator = _skip_whitespace(text, end)
+            if separator >= len(text) or text[separator] != ",":
+                break
+
+            next_value = _skip_whitespace(text, separator + 1)
+            if next_value >= len(text) or text[next_value] not in "{[":
+                values = []
+                break
+            current = next_value
+
+        if len(values) >= 2:
+            arrays.append(values)
+        index = max(end, index + 1)
+    return arrays
+
+
+def _skip_whitespace(text: str, index: int) -> int:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index
 
 
 def validate_json_schema(value: Any, schema: Mapping[str, Any], path: str = "$") -> None:

@@ -426,6 +426,21 @@ class AgentRuntimeTests(unittest.TestCase):
             {"task_id": "task-1", "model": "test-model"},
         )
 
+    def test_schema_parser_wraps_comma_separated_items_for_array_schema(self):
+        schema = {"type": "array", "items": OUTPUT_SCHEMA}
+        raw = (
+            '{"task_id": "task-1", "model": "test-model"},\n'
+            '{"task_id": "task-2", "model": "test-model"}'
+        )
+
+        self.assertEqual(
+            parse_json_output_for_schema(raw, schema),
+            [
+                {"task_id": "task-1", "model": "test-model"},
+                {"task_id": "task-2", "model": "test-model"},
+            ],
+        )
+
     def test_opencode_runner_installs_skill_and_invokes_it_in_message_prompt(self):
         requests = []
 

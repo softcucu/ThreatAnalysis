@@ -306,7 +306,11 @@ class OpenCodeAgentRunner:
                     message_payload,
                     query=self._opencode_query(directory),
                 )
-            response = self._assistant_response_or_latest(response, session_id, directory) or response
+            response = self._assistant_response_or_latest(response, session_id, directory)
+            if response is None:
+                raise RuntimeError(
+                    f"OpenCode session completed without assistant text response: {session_id}"
+                )
             output_text = _extract_response_text(response)
             raw_output_path.write_text(output_text, encoding="utf-8")
             log_file.write_text(
@@ -668,10 +672,7 @@ def _latest_assistant_message(messages: object) -> object | None:
             continue
         text = _assistant_response_text(item)
         if text.strip():
-            return {
-                "text": text.strip(),
-                "message": item,
-            }
+            return item
     return None
 
 
@@ -681,7 +682,7 @@ def _assistant_response_text(response: object) -> str:
 
     if _message_role(response) != "assistant":
         return ""
-    return _collect_text(response)
+    return _extract_response_text(response)
 
 
 def _message_role(message: Mapping[str, object]) -> str | None:
@@ -698,32 +699,37 @@ def _message_role(message: Mapping[str, object]) -> str | None:
 
 
 def _extract_response_text(response: object) -> str:
-    text = _collect_text(response)
-    if text.strip():
-        return text.strip()
-    return json.dumps(response, ensure_ascii=False, indent=2)
+    return "\n".join(_extract_text_parts(response)).strip()
 
 
-def _collect_text(value: object) -> str:
+def _extract_text_parts(value: object) -> list[str]:
+    lines: list[str] = []
     if isinstance(value, str):
-        return value
+        text = value.strip()
+        if text:
+            lines.append(text)
+        return lines
     if isinstance(value, list):
-        return "\n".join(part for item in value if (part := _collect_text(item)))
+        for item in value:
+            lines.extend(_extract_text_parts(item))
+        return lines
     if not isinstance(value, Mapping):
-        return ""
+        return lines
 
-    for collection_key in ("parts", "content"):
-        parts = value.get(collection_key)
-        if isinstance(parts, list):
-            text = "\n".join(part for item in parts if (part := _collect_text(item)))
-            if text:
-                return text
+    part_type = value.get("type")
+    if part_type == "text" and isinstance(value.get("text"), str):
+        text = value["text"].strip()
+        if text:
+            lines.append(text)
+        return lines
+    if part_type:
+        return lines
 
-    for key in ("text", "content", "output", "message"):
+    for key in ("parts", "content"):
         item = value.get(key)
-        if isinstance(item, str):
-            return item
-    return ""
+        if isinstance(item, list):
+            lines.extend(_extract_text_parts(item))
+    return lines
 
 
 def _raw_output_path(output_path: Path) -> Path:

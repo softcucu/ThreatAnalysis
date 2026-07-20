@@ -295,6 +295,7 @@ class OpenCodeAgentRunner:
                     message_payload,
                     query=self._opencode_query(directory),
                 )
+                response = self._wait_for_final_message(session_id, directory) or response
             output_text = _extract_response_text(response)
             raw_output_path.write_text(output_text, encoding="utf-8")
             log_file.write_text(
@@ -307,6 +308,7 @@ class OpenCodeAgentRunner:
                         "task_type": task.task_type,
                         "skill": skill_name,
                         "model": model_config.model,
+                        "waited_for_completion": not self.use_skill_command,
                         "response": response,
                     },
                     ensure_ascii=False,
@@ -397,6 +399,27 @@ class OpenCodeAgentRunner:
         if "tools" in model_config.parameters:
             payload["tools"] = model_config.parameters["tools"]
         return payload
+
+    def _wait_for_final_message(self, session_id: str, directory: Path) -> object | None:
+        try:
+            self._request_json(
+                "POST",
+                f"/api/session/{session_id}/wait",
+                query=self._opencode_query(directory),
+            )
+        except RuntimeError as exc:
+            if _is_opencode_http_404(exc):
+                return None
+            raise
+        messages = self._request_json(
+            "GET",
+            f"/api/session/{session_id}/message",
+            query={**self._opencode_query(directory), "order": "desc", "limit": "20"},
+        )
+        message = _latest_assistant_message(messages)
+        if message is None:
+            raise RuntimeError(f"OpenCode session completed without assistant response: {session_id}")
+        return message
 
     def _healthcheck(self) -> bool:
         try:
@@ -505,6 +528,45 @@ def _skill_invocation_prompt(skill_name: str, prompt: str) -> str:
     return f"/{skill_name}\n\n{prompt}"
 
 
+def _is_opencode_http_404(exc: RuntimeError) -> bool:
+    return "OpenCode HTTP 404 " in str(exc)
+
+
+def _latest_assistant_message(messages: object) -> object | None:
+    if isinstance(messages, Mapping):
+        items = messages.get("items")
+    else:
+        items = messages
+    if not isinstance(items, list):
+        return None
+
+    for item in items:
+        if not isinstance(item, Mapping) or item.get("type") != "assistant":
+            continue
+        text = _assistant_message_text(item)
+        if text.strip():
+            return {
+                "text": text.strip(),
+                "message": item,
+            }
+    return None
+
+
+def _assistant_message_text(message: Mapping[str, object]) -> str:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, Mapping) or item.get("type") != "text":
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
 def _extract_response_text(response: object) -> str:
     text = _collect_text(response)
     if text.strip():
@@ -520,11 +582,12 @@ def _collect_text(value: object) -> str:
     if not isinstance(value, Mapping):
         return ""
 
-    parts = value.get("parts")
-    if isinstance(parts, list):
-        text = "\n".join(part for item in parts if (part := _collect_text(item)))
-        if text:
-            return text
+    for collection_key in ("parts", "content"):
+        parts = value.get(collection_key)
+        if isinstance(parts, list):
+            text = "\n".join(part for item in parts if (part := _collect_text(item)))
+            if text:
+                return text
 
     for key in ("text", "content", "output", "message"):
         item = value.get(key)

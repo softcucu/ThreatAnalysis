@@ -368,19 +368,40 @@ class AgentRuntimeTests(unittest.TestCase):
                 if method == "POST" and path == "/session":
                     return {"id": "session-001", "title": payload.get("title")}
                 if method == "POST" and path == "/session/session-001/message":
-                    model = payload["model"]
                     return {
                         "parts": [
                             {
                                 "type": "text",
-                                "text": json.dumps(
-                                    {
-                                        "task_id": "task-1",
-                                        "model": f"{model['providerID']}/{model['modelID']}",
-                                    }
-                                ),
+                                "text": "正在分析，还没有最终 JSON。",
                             }
                         ]
+                    }
+                if method == "POST" and path == "/api/session/session-001/wait":
+                    return None
+                if method == "GET" and path == "/api/session/session-001/message":
+                    return {
+                        "items": [
+                            {
+                                "id": "assistant-1",
+                                "type": "assistant",
+                                "time": {"created": 1, "completed": 2},
+                                "agent": "build",
+                                "model": {"id": "test-model", "providerID": "test-provider"},
+                                "content": [
+                                    {"type": "reasoning", "id": "reasoning-1", "text": "thinking"},
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps(
+                                            {
+                                                "task_id": "task-1",
+                                                "model": "test-provider/test-model",
+                                            }
+                                        ),
+                                    },
+                                ],
+                            }
+                        ],
+                        "cursor": {},
                     }
                 raise AssertionError((method, path, payload, query))
 
@@ -393,19 +414,25 @@ class AgentRuntimeTests(unittest.TestCase):
                 result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
             installed_skill = Path(tmp) / ".opencode" / "skills" / "example-skill" / "SKILL.md"
             installed_skill_text = installed_skill.read_text(encoding="utf-8")
+            raw_text = Path(result.output_path + ".raw.txt").read_text(encoding="utf-8")
 
         self.assertEqual(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(result.output["model"], "test-provider/test-model")
         self.assertEqual(requests[0][1], "/session")
         self.assertEqual(requests[1][1], "/session/session-001/message")
+        self.assertEqual(requests[2][1], "/api/session/session-001/wait")
+        self.assertEqual(requests[3][1], "/api/session/session-001/message")
         self.assertEqual(
             requests[1][2]["model"],
             {"providerID": "test-provider", "modelID": "test-model"},
         )
+        self.assertEqual(requests[3][3]["order"], "desc")
         self.assertEqual(requests[1][2]["parts"][0]["type"], "text")
         self.assertTrue(requests[1][2]["parts"][0]["text"].startswith("/example-skill\n\n"))
         self.assertIn("Produce output.", requests[1][2]["parts"][0]["text"])
         self.assertNotIn("Example Skill", requests[1][2]["parts"][0]["text"])
+        self.assertIn('"task_id": "task-1"', raw_text)
+        self.assertNotIn("正在分析", raw_text)
         self.assertEqual(requests[0][3]["directory"], str(Path(tmp).resolve()))
         self.assertIn("Example Skill", installed_skill_text)
 

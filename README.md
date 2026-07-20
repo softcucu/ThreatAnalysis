@@ -278,12 +278,20 @@ python3 scripts/run_threat_analysis.py \
 
 ```python
 from agent_runtime import AgentScheduler, AgentSubmitter, ModelRouter, OpenCodeAgentRunner, load_runtime_config
+from threat_analysis_harness.skills import default_skill_paths
 
 config = load_runtime_config("agent-runtime.json")
+skill_paths = default_skill_paths()
 
 runner = OpenCodeAgentRunner(
     base_url="http://127.0.0.1:4096",
     start_command=("opencode", "serve", "--hostname", "127.0.0.1", "--port", "4096"),
+    skill_paths=(
+        skill_paths.value_asset_map,
+        skill_paths.high_risk_module_map,
+        skill_paths.high_risk_module_merge,
+        skill_paths.attack_tree_by_asset,
+    ),
 )
 
 with runner:
@@ -302,6 +310,12 @@ with runner:
 runner = OpenCodeAgentRunner(
     base_url="http://127.0.0.1:4096",
     start_command=None,
+    skill_paths=(
+        skill_paths.value_asset_map,
+        skill_paths.high_risk_module_map,
+        skill_paths.high_risk_module_merge,
+        skill_paths.attack_tree_by_asset,
+    ),
 )
 ```
 
@@ -312,10 +326,16 @@ runner = OpenCodeAgentRunner(
     base_url="http://127.0.0.1:4096",
     username="opencode",
     password="your-password",
+    skill_paths=(
+        skill_paths.value_asset_map,
+        skill_paths.high_risk_module_map,
+        skill_paths.high_risk_module_merge,
+        skill_paths.attack_tree_by_asset,
+    ),
 )
 ```
 
-runner 每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`，把模型原始返回文本写入 `<output_path>.raw.txt`。运行框架会从原始文本中提取 JSON，完成 JSON schema 校验后，再由程序将规范化 JSON 写入 `output_path`。
+runner 每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`。使用 opencode runner 时，程序会在发送 message 后等待 session 进入 idle，再读取最终 assistant 文本并写入 `<output_path>.raw.txt`；运行框架随后从该最终文本中提取 JSON，完成 JSON schema 校验后，再由程序将规范化 JSON 写入 `output_path`。
 
 ## Web 查看页
 

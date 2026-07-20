@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import threading
@@ -12,11 +13,13 @@ from agent_runtime import (
     FunctionAgentRunner,
     ModelRouter,
     OpenCodeAgentRunner,
+    ProgressPrinter,
     RuntimeConfig,
     TaskStatus,
 )
 from agent_runtime.errors import TaskValidationError
 from agent_runtime.config import load_runtime_config
+from agent_runtime.output_validation import parse_json_output, parse_json_output_for_schema
 from agent_runtime.preflight import validate_task
 from agent_runtime.queue import TaskQueue
 
@@ -148,6 +151,89 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual(result.status, TaskStatus.SUCCEEDED)
             self.assertEqual(result.output["task_id"], "task-1")
             self.assertEqual(json.loads(Path(result.output_path).read_text())["task_id"], "task-1")
+
+    def test_submitter_extracts_json_and_writes_canonical_output(self):
+        def run(task, model_config, prompt):
+            return (
+                "模型输出如下：\n"
+                "```json\n"
+                + json.dumps({"task_id": task.task_id, "model": model_config.model})
+                + "\n```\n"
+                "已完成。"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FunctionAgentRunner(run),
+                model_router=router(),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+            output_text = Path(result.output_path).read_text(encoding="utf-8")
+            raw_text = Path(result.output_path + ".raw.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(json.loads(output_text), {"task_id": "task-1", "model": "test-model"})
+        self.assertNotIn("```", output_text)
+        self.assertIn("```json", raw_text)
+        self.assertIsNone(result.raw_output)
+
+    def test_progress_reporter_outputs_key_task_steps(self):
+        def run(task, model_config, prompt):
+            return json.dumps({"task_id": task.task_id, "model": model_config.model})
+
+        stream = io.StringIO()
+        progress = ProgressPrinter(enabled=True, stream=stream)
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FunctionAgentRunner(run),
+                model_router=router(),
+                progress_reporter=progress,
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        progress_text = stream.getvalue()
+        self.assertIn("runtime started: workers=2", progress_text)
+        self.assertIn("task queued: task_id=task-1 task_type=unit", progress_text)
+        self.assertIn("task started: task_id=task-1 task_type=unit", progress_text)
+        self.assertIn("task completed: task_id=task-1 task_type=unit", progress_text)
+        self.assertIn("runtime stopped", progress_text)
+
+    def test_scheduler_uses_progress_switch_from_config(self):
+        scheduler = AgentScheduler(
+            runner=FunctionAgentRunner(lambda task, model_config, prompt: "[]"),
+            model_router=ModelRouter(
+                RuntimeConfig.from_dict(
+                    {
+                        "models": {"unit": "test-model"},
+                        "progress": {"enabled": True},
+                    }
+                )
+            ),
+        )
+
+        self.assertIsInstance(scheduler.progress_reporter, ProgressPrinter)
+        self.assertTrue(scheduler.progress_reporter.enabled)
+
+    def test_parse_json_output_extracts_embedded_json(self):
+        self.assertEqual(
+            parse_json_output('说明文字\n{"task_id": "task-1", "model": "test-model"}\n结束'),
+            {"task_id": "task-1", "model": "test-model"},
+        )
+
+    def test_schema_parser_skips_json_that_does_not_match_schema(self):
+        raw = (
+            '中间片段：{"task_id": "incomplete"}\n'
+            '最终结果：{"task_id": "task-1", "model": "test-model"}'
+        )
+
+        self.assertEqual(
+            parse_json_output_for_schema(raw, OUTPUT_SCHEMA),
+            {"task_id": "task-1", "model": "test-model"},
+        )
 
     def test_opencode_runner_creates_session_and_sends_model(self):
         requests = []
@@ -355,6 +441,7 @@ class AgentRuntimeTests(unittest.TestCase):
                             "backup": 1,
                         },
                         "concurrency": {"by_task_type": {"unit": 2}},
+                        "progress": {"enabled": True},
                     }
                 ),
                 encoding="utf-8",
@@ -368,6 +455,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(config.model_resource_limits["test-model"], 2)
         self.assertEqual(config.model_resource_limits["backup"], 1)
         self.assertEqual(config.task_type_concurrency["unit"], 2)
+        self.assertTrue(config.progress_enabled)
 
     def test_task_can_load_schema_from_path(self):
         with tempfile.TemporaryDirectory() as tmp:

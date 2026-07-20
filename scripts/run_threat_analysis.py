@@ -22,6 +22,7 @@ from agent_runtime import (  # noqa: E402
     AgentSubmitter,
     ModelRouter,
     OpenCodeAgentRunner,
+    ProgressPrinter,
     load_runtime_config,
 )
 from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline  # noqa: E402
@@ -130,6 +131,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="任务完成后删除对应 opencode session。",
     )
+    parser.set_defaults(print_progress=None)
+    parser.add_argument(
+        "--print-progress",
+        dest="print_progress",
+        action="store_true",
+        help="打印关键步骤和任务的开始/完成情况；未传时使用配置文件 progress.enabled。",
+    )
+    parser.add_argument(
+        "--no-print-progress",
+        dest="print_progress",
+        action="store_false",
+        help="关闭关键步骤和任务进度打印。",
+    )
     parser.add_argument(
         "--server-timeout",
         type=float,
@@ -151,6 +165,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     layout = ThreatAnalysisLayout.for_run(args.artifacts_root, run_id)
     start_command = None if args.no_start_opencode else tuple(shlex.split(args.opencode_command))
     password = args.opencode_password or os.environ.get("OPENCODE_PASSWORD")
+    progress_enabled = (
+        config.progress_enabled if args.print_progress is None else bool(args.print_progress)
+    )
+    progress = ProgressPrinter(enabled=progress_enabled)
 
     runner = OpenCodeAgentRunner(
         base_url=args.opencode_base_url,
@@ -163,16 +181,20 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         delete_session=args.delete_session,
     )
 
+    progress.emit(f"opencode server check started: base_url={args.opencode_base_url}")
     with runner:
+        progress.emit(f"opencode server ready: base_url={args.opencode_base_url}")
         scheduler = AgentScheduler(
             runner=runner,
             model_router=ModelRouter(config),
+            progress_reporter=progress,
         )
         with scheduler:
             pipeline = ThreatAnalysisPipeline(
                 submitter=AgentSubmitter(scheduler),
                 layout=layout,
                 skill_paths=default_skill_paths(args.project_root),
+                progress_reporter=progress,
             )
             result = pipeline.run(
                 input_files=[Path(path) for path in args.input],

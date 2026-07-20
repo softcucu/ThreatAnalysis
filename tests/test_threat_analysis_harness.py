@@ -1,9 +1,17 @@
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from agent_runtime import AgentScheduler, AgentSubmitter, FunctionAgentRunner, ModelRouter, RuntimeConfig
+from agent_runtime import (
+    AgentScheduler,
+    AgentSubmitter,
+    FunctionAgentRunner,
+    ModelRouter,
+    ProgressPrinter,
+    RuntimeConfig,
+)
 from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline
 from threat_analysis_harness.skills import default_skill_paths
 
@@ -190,16 +198,20 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                 )
             raise AssertionError(task.task_type)
 
+        progress_stream = io.StringIO()
+        progress = ProgressPrinter(enabled=True, stream=progress_stream)
         with tempfile.TemporaryDirectory() as tmp:
             scheduler = AgentScheduler(
                 runner=FunctionAgentRunner(run),
                 model_router=runtime_router(),
+                progress_reporter=progress,
             )
             with scheduler:
                 pipeline = ThreatAnalysisPipeline(
                     submitter=AgentSubmitter(scheduler),
                     layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
                     skill_paths=default_skill_paths(ROOT),
+                    progress_reporter=progress,
                 )
                 result = pipeline.run(input_files=[INPUT], timeout=5)
 
@@ -237,6 +249,13 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                 Path(tmp) / "runs" / "run-001" / "attack_trees" / "final" / "attack_trees.json"
             )
             self.assertTrue(final_attack_tree.exists())
+            progress_text = progress_stream.getvalue()
+            self.assertIn("pipeline started: artifacts=", progress_text)
+            self.assertIn("value asset map started: tasks=4", progress_text)
+            self.assertIn("high-risk module map started: tasks=5", progress_text)
+            self.assertIn("high-risk module merge completed: modules=1", progress_text)
+            self.assertIn("attack tree analysis completed: trees=1", progress_text)
+            self.assertIn("pipeline completed: duration=", progress_text)
 
 
 if __name__ == "__main__":

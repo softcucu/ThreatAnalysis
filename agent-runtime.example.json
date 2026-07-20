@@ -42,5 +42,8 @@
   },
   "concurrency": {
     "global": 7
+  },
+  "progress": {
+    "enabled": true
   }
 }

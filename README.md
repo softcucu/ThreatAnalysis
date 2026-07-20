@@ -50,7 +50,7 @@ map 阶段使用同一个 `high_risk_module_map` skill，但按 5 类高风险�
 
 如果传入多个 `high_risk_input_batches`，每个 batch 都会分别拆成这 5 类任务。每个分类任务只识别命中当前高风险特征的模块，并要求对应“是否涉及...”字段为 `是`；其他字段仍按代码证据真实填写。
 
-map 任务输出写入：
+map 任务解析校验后的 JSON 输出写入：
 
 ```text
 runs/<run_id>/high_risk_modules/raw/
@@ -85,7 +85,7 @@ runs/<run_id>/high_risk_modules/final/high-risk-module-merge.json
 runs/<run_id>/task_inputs/attack-tree-by-asset-*.input.json
 ```
 
-攻击树 raw 输出写入：
+攻击树任务解析校验后的 JSON 输出写入：
 
 ```text
 runs/<run_id>/attack_trees/raw/
@@ -177,6 +177,9 @@ cp agent-runtime.example.json agent-runtime.json
   },
   "concurrency": {
     "global": 7
+  },
+  "progress": {
+    "enabled": true
   }
 }
 ```
@@ -205,6 +208,7 @@ cp agent-runtime.example.json agent-runtime.json
 - `model_resources` 配置每个资源池的并发度，这是主要限流方式。
 - `concurrency.global` 是 scheduler worker 总数，通常设置为各模型资源池并发度之和或略高。
 - `concurrency.by_task_type` 仍可作为兼容性的额外限制，但默认不需要配置。
+- `progress.enabled` 是全局进度打印开关。开启后会向 stderr 输出 opencode 连接检查、pipeline 阶段、任务排队、任务开始、任务完成和失败信息；关闭后只保留最终 JSON 输出。
 
 opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架中的 `OpenCodeAgentRunner` 会启动或连接这个 server；每个 `AgentTask` 会创建一个独立 opencode session，然后向该 session 发送 message。message 中的 `model` 来自当前任务的模型配置。
 
@@ -265,6 +269,7 @@ python3 scripts/run_threat_analysis.py \
 - `--opencode-agent`：发送给 opencode 的 agent 名称。
 - `--timeout`：等待每批 agent 任务的超时时间。
 - `--delete-session`：任务完成后删除对应 opencode session。
+- `--print-progress` / `--no-print-progress`：覆盖配置文件中的 `progress.enabled`，控制是否打印关键步骤进度。
 
 脚本结束后会输出本次 run ID、产物数量和最终 JSON 路径。
 
@@ -309,7 +314,7 @@ runner = OpenCodeAgentRunner(
 )
 ```
 
-runner 每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`，把 opencode 返回文本写入 `output_path`，随后由运行框架做 JSON schema 校验。
+runner 每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`，把模型原始返回文本写入 `<output_path>.raw.txt`。运行框架会从原始文本中提取 JSON，完成 JSON schema 校验后，再由程序将规范化 JSON 写入 `output_path`。
 
 ## Web 查看页
 

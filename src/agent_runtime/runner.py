@@ -33,11 +33,12 @@ class FunctionAgentRunner:
         started = time.time()
         output_path = Path(task.output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_output_path = _raw_output_path(output_path)
         try:
             value = self._func(task, model_config, prompt)
             if isinstance(value, AgentResult):
                 return value
-            output_path.write_text(value, encoding="utf-8")
+            raw_output_path.write_text(value, encoding="utf-8")
             return AgentResult(
                 task_id=task.task_id,
                 task_type=task.task_type,
@@ -47,6 +48,7 @@ class FunctionAgentRunner:
                 started_at=started,
                 finished_at=time.time(),
                 returncode=0,
+                raw_output=value,
                 metadata=dict(task.metadata),
             )
         except Exception as exc:  # pragma: no cover - exercised through tests as behavior
@@ -67,8 +69,8 @@ class CommandAgentRunner:
     """Run an external agent command.
 
     Command arguments may contain placeholders:
-    {prompt_file}, {output_path}, {skill_path}, {skill_file}, {task_id},
-    {task_type}, and {model}.
+    {prompt_file}, {output_path}, {raw_output_path}, {skill_path},
+    {skill_file}, {task_id}, {task_type}, and {model}.
     """
 
     def __init__(
@@ -87,6 +89,7 @@ class CommandAgentRunner:
         started = time.time()
         output_path = Path(task.output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_output_path = _raw_output_path(output_path)
         prompt_file = output_path.with_suffix(output_path.suffix + ".prompt.txt")
         log_file = output_path.with_suffix(output_path.suffix + ".log")
         prompt_file.write_text(prompt, encoding="utf-8")
@@ -94,6 +97,7 @@ class CommandAgentRunner:
             part.format(
                 prompt_file=str(prompt_file),
                 output_path=str(output_path),
+                raw_output_path=str(raw_output_path),
                 skill_path=task.skill_path,
                 skill_file=str(task.skill_file),
                 task_id=task.task_id,
@@ -121,8 +125,13 @@ class CommandAgentRunner:
                 + completed.stderr,
                 encoding="utf-8",
             )
-            if completed.returncode == 0 and not output_path.exists() and completed.stdout:
-                output_path.write_text(completed.stdout, encoding="utf-8")
+            raw_output = None
+            if completed.returncode == 0:
+                raw_output = _command_raw_output(
+                    output_path=output_path,
+                    raw_output_path=raw_output_path,
+                    stdout=completed.stdout,
+                )
             status = TaskStatus.SUCCEEDED if completed.returncode == 0 else TaskStatus.FAILED
             return AgentResult(
                 task_id=task.task_id,
@@ -135,6 +144,7 @@ class CommandAgentRunner:
                 started_at=started,
                 finished_at=time.time(),
                 returncode=completed.returncode,
+                raw_output=raw_output,
                 metadata=dict(task.metadata),
             )
         except Exception as exc:
@@ -247,6 +257,7 @@ class OpenCodeAgentRunner:
         started = time.time()
         output_path = Path(task.output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_output_path = _raw_output_path(output_path)
         prompt_file = output_path.with_suffix(output_path.suffix + ".prompt.txt")
         log_file = output_path.with_suffix(output_path.suffix + ".log")
         prompt_file.write_text(prompt, encoding="utf-8")
@@ -265,7 +276,7 @@ class OpenCodeAgentRunner:
             message_payload = self._message_payload(prompt, model_config)
             response = self._post_json(f"/session/{session_id}/message", message_payload)
             output_text = _extract_response_text(response)
-            output_path.write_text(output_text, encoding="utf-8")
+            raw_output_path.write_text(output_text, encoding="utf-8")
             log_file.write_text(
                 json.dumps(
                     {
@@ -291,6 +302,7 @@ class OpenCodeAgentRunner:
                 started_at=started,
                 finished_at=time.time(),
                 returncode=0,
+                raw_output=output_text,
                 metadata=dict(task.metadata),
             )
         except Exception as exc:
@@ -441,3 +453,26 @@ def _collect_text(value: object) -> str:
         if isinstance(item, str):
             return item
     return ""
+
+
+def _raw_output_path(output_path: Path) -> Path:
+    return output_path.with_suffix(output_path.suffix + ".raw.txt")
+
+
+def _command_raw_output(
+    *,
+    output_path: Path,
+    raw_output_path: Path,
+    stdout: str,
+) -> str | None:
+    if raw_output_path.exists():
+        return raw_output_path.read_text(encoding="utf-8")
+    if output_path.exists():
+        raw_output = output_path.read_text(encoding="utf-8")
+    elif stdout:
+        raw_output = stdout
+    else:
+        return None
+
+    raw_output_path.write_text(raw_output, encoding="utf-8")
+    return raw_output

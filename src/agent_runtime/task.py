@@ -88,6 +88,7 @@ class AgentResult:
     finished_at: float | None = None
     returncode: int | None = None
     output: Any | None = None
+    raw_output: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -120,6 +121,7 @@ class AgentResult:
             finished_at=data.get("finished_at"),
             returncode=data.get("returncode"),
             output=data.get("output"),
+            raw_output=None if data.get("raw_output") is None else str(data["raw_output"]),
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -136,6 +138,7 @@ class AgentResult:
             "finished_at": self.finished_at,
             "returncode": self.returncode,
             "output": self.output,
+            "raw_output": self.raw_output,
             "metadata": dict(self.metadata),
         }
 

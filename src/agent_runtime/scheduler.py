@@ -8,8 +8,9 @@ from collections import defaultdict
 
 from agent_runtime.errors import SchedulerStateError
 from agent_runtime.model_router import ModelConfig, ModelRouter
-from agent_runtime.output_validation import parse_and_validate_output
+from agent_runtime.output_validation import parse_validate_and_write_output
 from agent_runtime.preflight import validate_task
+from agent_runtime.progress import ProgressPrinter, ProgressReporter
 from agent_runtime.prompt_builder import PromptBuilder
 from agent_runtime.queue import TaskQueue
 from agent_runtime.result_store import ResultStore
@@ -25,11 +26,15 @@ class AgentScheduler:
         model_router: ModelRouter,
         prompt_builder: PromptBuilder | None = None,
         result_store: ResultStore | None = None,
+        progress_reporter: ProgressReporter | None = None,
     ) -> None:
         self.runner = runner
         self.model_router = model_router
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.result_store = result_store or ResultStore()
+        self.progress_reporter = progress_reporter
+        if self.progress_reporter is None and self.model_router.progress_enabled:
+            self.progress_reporter = ProgressPrinter(enabled=True)
         self._queue = TaskQueue()
         self._threads: list[threading.Thread] = []
         self._active_by_type: dict[str, int] = defaultdict(int)
@@ -44,6 +49,7 @@ class AgentScheduler:
             return
         self._started = True
         self._stop_event.clear()
+        self._progress(f"runtime started: workers={self.model_router.global_concurrency}")
         for index in range(self.model_router.global_concurrency):
             thread = threading.Thread(
                 target=self._worker_loop,
@@ -61,6 +67,7 @@ class AgentScheduler:
                 thread.join(timeout=5)
         self._threads.clear()
         self._started = False
+        self._progress("runtime stopped")
 
     def submit(self, task: AgentTask | dict) -> str:
         normalized = task if isinstance(task, AgentTask) else AgentTask.from_dict(task)
@@ -73,6 +80,10 @@ class AgentScheduler:
         )
         self.result_store.register(normalized)
         self._queue.put(normalized)
+        self._progress(
+            f"task queued: task_id={normalized.task_id} task_type={normalized.task_type} "
+            f"output={normalized.output_path}"
+        )
         return normalized.task_id
 
     def submit_many(self, tasks: list[AgentTask | dict]) -> list[str]:
@@ -133,30 +144,64 @@ class AgentScheduler:
 
     def _run_task(self, task: AgentTask) -> None:
         started_at = time.time()
+        model: str | None = None
         try:
             model_config = self._selected_models.get(task.task_id) or self.model_router.route(
                 task.task_type
             )
+            model = model_config.model
             self.result_store.mark_running(task, started_at=started_at, model=model_config.model)
+            self._progress(
+                f"task started: task_id={task.task_id} task_type={task.task_type} "
+                f"model={model_config.model}"
+            )
             prompt = self.prompt_builder.build(task, model_config)
             result = self.runner.run(task, model_config, prompt)
             if result.status == TaskStatus.SUCCEEDED:
-                output = parse_and_validate_output(task)
-                result = result.with_status(TaskStatus.SUCCEEDED, output=output)
-            self.result_store.update(result)
-        except Exception as exc:
-            self.result_store.update(
-                AgentResult(
-                    task_id=task.task_id,
-                    task_type=task.task_type,
-                    status=TaskStatus.FAILED,
-                    output_path=task.output_path,
-                    error=str(exc),
-                    started_at=started_at,
-                    finished_at=time.time(),
-                    metadata=dict(task.metadata),
+                output = parse_validate_and_write_output(task, raw=result.raw_output)
+                result = result.with_status(
+                    TaskStatus.SUCCEEDED,
+                    output=output,
+                    raw_output=None,
                 )
+            self.result_store.update(result)
+            self._progress_result(result, fallback_started_at=started_at)
+        except Exception as exc:
+            result = AgentResult(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                status=TaskStatus.FAILED,
+                output_path=task.output_path,
+                model=model,
+                error=str(exc),
+                started_at=started_at,
+                finished_at=time.time(),
+                metadata=dict(task.metadata),
             )
+            self.result_store.update(result)
+            self._progress_result(result, fallback_started_at=started_at)
+
+    def _progress(self, message: str) -> None:
+        if self.progress_reporter is not None:
+            self.progress_reporter.emit(message)
+
+    def _progress_result(self, result: AgentResult, *, fallback_started_at: float) -> None:
+        started_at = result.started_at or fallback_started_at
+        finished_at = result.finished_at or time.time()
+        duration = f"{finished_at - started_at:.1f}s"
+        if result.status == TaskStatus.SUCCEEDED:
+            self._progress(
+                f"task completed: task_id={result.task_id} task_type={result.task_type} "
+                f"model={result.model or '-'} duration={duration} output={result.output_path}"
+            )
+            return
+
+        detail = _short_error(result.error)
+        log_suffix = "" if not result.log_path else f" log={result.log_path}"
+        self._progress(
+            f"task failed: task_id={result.task_id} task_type={result.task_type} "
+            f"model={result.model or '-'} duration={duration} error={detail}{log_suffix}"
+        )
 
     def __enter__(self) -> "AgentScheduler":
         self.start()
@@ -164,3 +209,10 @@ class AgentScheduler:
 
     def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
         self.stop(wait=True)
+
+
+def _short_error(value: str | None, *, limit: int = 200) -> str:
+    text = "unknown error" if value is None else " ".join(value.split())
+    if len(text) <= limit:
+        return repr(text)
+    return repr(text[: limit - 3] + "...")

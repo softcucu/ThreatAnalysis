@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from agent_runtime.errors import OutputValidationError, TaskValidationError
 from agent_runtime.task import AgentTask
+
+
+_FENCED_BLOCK_RE = re.compile(
+    r"```(?P<info>[^\n`]*)\n(?P<body>.*?)```",
+    re.DOTALL,
+)
 
 
 def load_task_schema(task: AgentTask) -> Mapping[str, Any]:
@@ -38,22 +45,128 @@ def parse_and_validate_output(task: AgentTask) -> Any:
     if not output_path.exists():
         raise OutputValidationError(f"Agent output file does not exist: {output_path}")
     raw = output_path.read_text(encoding="utf-8")
-    data = parse_json_output(raw)
     schema = load_task_schema(task)
-    validate_json_schema(data, schema)
+    return parse_json_output_for_schema(raw, schema)
+
+
+def parse_validate_and_write_output(task: AgentTask, raw: str | None = None) -> Any:
+    """Parse agent text, validate it, and write canonical JSON to output_path."""
+
+    output_path = Path(task.output_path)
+    if raw is None:
+        if not output_path.exists():
+            raise OutputValidationError(f"Agent output file does not exist: {output_path}")
+        raw = output_path.read_text(encoding="utf-8")
+
+    schema = load_task_schema(task)
+    data = parse_json_output_for_schema(raw, schema)
+    write_json_output(output_path, data)
     return data
 
 
+def write_json_output(path: str | Path, payload: Any) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
 def parse_json_output(raw: str) -> Any:
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
-            text = "\n".join(lines[1:-1]).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise OutputValidationError(f"Agent output is not valid JSON: {exc}") from exc
+    values, errors = _parse_json_values(raw)
+    if values:
+        return values[0]
+
+    raise _json_parse_error(raw, errors)
+
+
+def parse_json_output_for_schema(raw: str, schema: Mapping[str, Any]) -> Any:
+    values, errors = _parse_json_values(raw)
+    validation_errors: list[OutputValidationError] = []
+    for value in values:
+        try:
+            validate_json_schema(value, schema)
+            return value
+        except OutputValidationError as exc:
+            validation_errors.append(exc)
+
+    if validation_errors:
+        raise validation_errors[-1]
+    raise _json_parse_error(raw, errors)
+
+
+def _parse_json_values(raw: str) -> tuple[list[Any], list[json.JSONDecodeError]]:
+    text = raw.strip().lstrip("\ufeff").strip()
+    errors: list[json.JSONDecodeError] = []
+    values: list[Any] = []
+
+    for candidate in _json_text_candidates(text):
+        try:
+            values.append(json.loads(candidate))
+        except json.JSONDecodeError as exc:
+            errors.append(exc)
+
+    extracted, extract_errors = _extract_json_values(text)
+    values.extend(extracted)
+    errors.extend(extract_errors)
+    return values, errors
+
+
+def _json_parse_error(raw: str, errors: list[json.JSONDecodeError]) -> OutputValidationError:
+    text = raw.strip().lstrip("\ufeff").strip()
+    detail = errors[-1] if errors else "empty output"
+    snippet = text[:300].replace("\n", "\\n")
+    return OutputValidationError(
+        f"Agent output does not contain valid JSON: {detail}. "
+        f"Output starts with: {snippet!r}"
+    )
+
+
+def _json_text_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    if text:
+        candidates.append(text)
+
+    fenced_blocks = [
+        (match.group("info").strip().lower(), match.group("body").strip())
+        for match in _FENCED_BLOCK_RE.finditer(text)
+    ]
+    candidates.extend(
+        body for info, body in fenced_blocks if body and _is_json_fence(info)
+    )
+    candidates.extend(
+        body for info, body in fenced_blocks if body and not _is_json_fence(info)
+    )
+    return candidates
+
+
+def _is_json_fence(info: str) -> bool:
+    return not info or info.split()[0] == "json"
+
+
+def _extract_json_values(text: str) -> tuple[list[Any], list[json.JSONDecodeError]]:
+    decoder = json.JSONDecoder()
+    errors: list[json.JSONDecodeError] = []
+    values: list[Any] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char not in "{[":
+            index += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+            values.append(value)
+            index = max(end, index + 1)
+        except json.JSONDecodeError as exc:
+            errors.append(exc)
+            index += 1
+
+    if not values and not errors:
+        errors.append(json.JSONDecodeError("No JSON object or array found", text, 0))
+    return values, errors
 
 
 def validate_json_schema(value: Any, schema: Mapping[str, Any], path: str = "$") -> None:

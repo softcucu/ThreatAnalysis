@@ -39,6 +39,7 @@ class RuntimeConfig:
     model_resource_limits: Mapping[str, int] = field(default_factory=dict)
     global_concurrency: int = 1
     task_type_concurrency: Mapping[str, int] = field(default_factory=dict)
+    progress_enabled: bool = False
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeConfig":
@@ -64,6 +65,7 @@ class RuntimeConfig:
                 str(task_type): int(limit)
                 for task_type, limit in concurrency.get("by_task_type", {}).items()
             },
+            progress_enabled=_progress_enabled_from_data(data),
         )
 
 
@@ -82,6 +84,10 @@ class ModelRouter:
     @property
     def global_concurrency(self) -> int:
         return self._config.global_concurrency
+
+    @property
+    def progress_enabled(self) -> bool:
+        return self._config.progress_enabled
 
     def route(self, task_type: str) -> ModelConfig:
         try:
@@ -139,3 +145,21 @@ def _default_global_concurrency(model_resource_limits: Mapping[str, int]) -> int
     if not model_resource_limits:
         return 1
     return max(1, sum(int(limit) for limit in model_resource_limits.values()))
+
+
+def _progress_enabled_from_data(data: Mapping[str, Any]) -> bool:
+    if "print_progress" in data:
+        return _bool_from_value(data["print_progress"])
+    if "verbose" in data:
+        return _bool_from_value(data["verbose"])
+
+    progress = data.get("progress", {})
+    if isinstance(progress, Mapping):
+        return _bool_from_value(progress.get("enabled", False))
+    return _bool_from_value(progress)
+
+
+def _bool_from_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)

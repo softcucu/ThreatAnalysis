@@ -139,10 +139,10 @@ class AgentRuntimeTests(unittest.TestCase):
 
     def test_submitter_runs_task_and_writes_output(self):
         def run(task, model_config, prompt):
-            self.assertIn("Produce output.", prompt)
-            self.assertIn("调用 skill：`example-skill`", prompt)
-            self.assertIn("直接作为本次回复返回", prompt)
-            self.assertIn("不要创建、修改或写入任何结果文件", prompt)
+            self.assertEqual(prompt, "Produce output.")
+            self.assertNotIn("调用 skill：`example-skill`", prompt)
+            self.assertNotIn("输出 JSON Schema：", prompt)
+            self.assertNotIn("输入文件：", prompt)
             self.assertNotIn("Example Skill", prompt)
             self.assertNotIn("# Runtime Prompt", prompt)
             self.assertNotIn("# Model", prompt)
@@ -246,12 +246,11 @@ class AgentRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             prompt = PromptBuilder().build(self.make_task(tmp), router().route("unit"))
 
-        self.assertIn("Produce output.", prompt)
-        self.assertIn("调用 skill：`example-skill`", prompt)
-        self.assertIn("输出 JSON Schema：", prompt)
-        self.assertIn(str(INPUT), prompt)
-        self.assertIn("直接作为本次回复返回", prompt)
-        self.assertIn("不要创建、修改或写入任何结果文件", prompt)
+        self.assertEqual(prompt, "Produce output.")
+        self.assertNotIn("调用 skill：`example-skill`", prompt)
+        self.assertNotIn("输出 JSON Schema：", prompt)
+        self.assertNotIn("输入文件：", prompt)
+        self.assertNotIn(str(INPUT), prompt)
         self.assertNotIn(str(Path(tmp) / "task-1.json"), prompt)
         self.assertNotIn("写入输出文件", prompt)
         self.assertNotIn("Example Skill", prompt)

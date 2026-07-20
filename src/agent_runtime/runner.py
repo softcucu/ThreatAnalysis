@@ -425,7 +425,7 @@ class OpenCodeAgentRunner:
 
     def _verify_skill_available(self, skill_name: str, directory: Path) -> None:
         try:
-            skills = self._request_json("GET", "/skill", query=self._opencode_query(directory))
+            skills = self._request_json("GET", "/skill")
         except RuntimeError as exc:
             if _is_opencode_http_404(exc):
                 return
@@ -441,7 +441,9 @@ class OpenCodeAgentRunner:
             f"skill={skill_name!r}, directory={str(directory)!r}, "
             f"skills_dir={str((directory / '.opencode' / 'skills').resolve())!r}, "
             f"config={str((directory / 'opencode.json').resolve())!r}, "
-            f"visible_skills=[{visible}]"
+            f"visible_skills=[{visible}]. "
+            "OpenCode /skill is checked without directory query/header; make sure "
+            "opencode serve is running in the same directory where these skills are installed."
         )
 
     def _healthcheck(self) -> bool:

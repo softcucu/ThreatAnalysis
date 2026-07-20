@@ -457,6 +457,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(result.output["model"], "test-provider/test-model")
         self.assertEqual(requests[0][1], "/skill")
+        self.assertIsNone(requests[0][3])
         self.assertEqual(requests[1][1], "/session")
         self.assertEqual(requests[2][1], "/session/session-001/message")
         self.assertEqual(requests[3][1], "/api/session/session-001/wait")
@@ -472,7 +473,6 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("Example Skill", requests[2][2]["parts"][0]["text"])
         self.assertIn('"task_id": "task-1"', raw_text)
         self.assertNotIn("正在分析", raw_text)
-        self.assertEqual(requests[0][3]["directory"], str(Path(tmp).resolve()))
         self.assertEqual(requests[1][3]["directory"], str(Path(tmp).resolve()))
         self.assertIn("Example Skill", installed_skill_text)
 
@@ -499,7 +499,20 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("example-skill", result.error)
         self.assertIn("other-skill", result.error)
 
-    def test_opencode_request_includes_directory_header(self):
+    def test_opencode_skill_verification_uses_plain_skill_endpoint(self):
+        requests = []
+
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def _request_json(self, method, path, payload=None, *, query=None):
+                requests.append((method, path, payload, query))
+                return [{"name": "example-skill", "location": "test", "content": ""}]
+
+        runner = FakeOpenCodeRunner(start_command=None)
+        runner._verify_skill_available("example-skill", Path("/tmp/runtime"))
+
+        self.assertEqual(requests, [("GET", "/skill", None, None)])
+
+    def test_opencode_request_with_directory_includes_context_header(self):
         captured = {}
 
         class FakeResponse:
@@ -520,8 +533,9 @@ class AgentRuntimeTests(unittest.TestCase):
         runner = OpenCodeAgentRunner(start_command=None)
         runner._urlopen = fake_urlopen
         response = runner._request_json(
-            "GET",
-            "/skill",
+            "POST",
+            "/session",
+            {"title": "test"},
             query={"directory": "/tmp/runtime workspace"},
         )
 

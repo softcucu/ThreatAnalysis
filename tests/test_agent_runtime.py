@@ -90,6 +90,18 @@ def shared_resource_router():
     )
 
 
+def opencode_router():
+    return ModelRouter(
+        RuntimeConfig.from_dict(
+            {
+                "models": {
+                    "unit": {"model": "test-provider/test-model"},
+                }
+            }
+        )
+    )
+
+
 class AgentRuntimeTests(unittest.TestCase):
     def make_task(self, output_dir, task_id="task-1", task_type="unit", priority=100):
         return AgentTask(
@@ -149,6 +161,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 if method == "POST" and path == "/session":
                     return {"id": "session-001", "title": payload.get("title")}
                 if method == "POST" and path == "/session/session-001/message":
+                    model = payload["model"]
                     return {
                         "parts": [
                             {
@@ -156,7 +169,7 @@ class AgentRuntimeTests(unittest.TestCase):
                                 "text": json.dumps(
                                     {
                                         "task_id": "task-1",
-                                        "model": payload["model"],
+                                        "model": f"{model['providerID']}/{model['modelID']}",
                                     }
                                 ),
                             }
@@ -167,17 +180,46 @@ class AgentRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             scheduler = AgentScheduler(
                 runner=FakeOpenCodeRunner(start_command=None),
-                model_router=router(),
+                model_router=opencode_router(),
             )
             with scheduler:
                 result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
 
         self.assertEqual(result.status, TaskStatus.SUCCEEDED)
-        self.assertEqual(result.output["model"], "test-model")
+        self.assertEqual(result.output["model"], "test-provider/test-model")
         self.assertEqual(requests[0][1], "/session")
         self.assertEqual(requests[1][1], "/session/session-001/message")
-        self.assertEqual(requests[1][2]["model"], "test-model")
+        self.assertEqual(
+            requests[1][2]["model"],
+            {"providerID": "test-provider", "modelID": "test-model"},
+        )
         self.assertEqual(requests[1][2]["parts"][0]["type"], "text")
+
+    def test_opencode_runner_supports_explicit_model_parameters(self):
+        runner = OpenCodeAgentRunner(start_command=None)
+        payload = runner._message_payload(
+            "hello",
+            RuntimeConfig.from_dict(
+                {
+                    "models": {
+                        "unit": {
+                            "model": "alias",
+                            "parameters": {
+                                "opencode_model": {
+                                    "providerID": "test-provider",
+                                    "modelID": "test-model",
+                                }
+                            },
+                        }
+                    }
+                }
+            ).models["unit"],
+        )
+
+        self.assertEqual(
+            payload["model"],
+            {"providerID": "test-provider", "modelID": "test-model"},
+        )
 
     def test_schema_validation_failure_returns_failed_result(self):
         def run(task, model_config, prompt):

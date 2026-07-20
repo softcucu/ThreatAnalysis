@@ -316,7 +316,7 @@ class OpenCodeAgentRunner:
 
     def _message_payload(self, prompt: str, model_config: ModelConfig) -> dict:
         payload: dict = {
-            "model": model_config.model,
+            "model": _opencode_model(model_config),
             "parts": [{"type": "text", "text": prompt}],
         }
         agent = model_config.parameters.get("agent") or self.agent
@@ -377,6 +377,42 @@ def _session_id(session: object) -> str | None:
         or session.get("session_id")
     )
     return None if value is None else str(value)
+
+
+def _opencode_model(model_config: ModelConfig) -> dict[str, str]:
+    configured = model_config.parameters.get("opencode_model")
+    if isinstance(configured, Mapping):
+        provider_id = configured.get("providerID") or configured.get("provider_id")
+        model_id = configured.get("modelID") or configured.get("model_id")
+        if provider_id and model_id:
+            return {
+                "providerID": str(provider_id),
+                "modelID": str(model_id),
+            }
+
+    provider_id = (
+        model_config.parameters.get("providerID")
+        or model_config.parameters.get("provider_id")
+        or model_config.parameters.get("provider")
+    )
+    model_id = model_config.parameters.get("modelID") or model_config.parameters.get("model_id")
+    if provider_id and model_id:
+        return {
+            "providerID": str(provider_id),
+            "modelID": str(model_id),
+        }
+
+    provider, separator, model = model_config.model.partition("/")
+    if separator and provider and model:
+        return {
+            "providerID": provider,
+            "modelID": model,
+        }
+
+    raise ValueError(
+        "OpenCode model must be configured as 'provider/model' "
+        "or with parameters.opencode_model={providerID, modelID}"
+    )
 
 
 def _extract_response_text(response: object) -> str:

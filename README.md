@@ -185,6 +185,22 @@ cp agent-runtime.example.json agent-runtime.json
 
 - `models` 的 key 是任务类型。
 - 同一个任务类型可以配置一个模型，也可以配置多个模型；多个模型按顺序作为候选，前面的模型资源池满了之后会使用后面的候选。
+- 使用 `OpenCodeAgentRunner` 时，`model` 推荐写成 `provider/model`，例如 `openai/gpt-5-mini`。runner 会发送给 opencode 的 message `model` 转成 `{ "providerID": "openai", "modelID": "gpt-5-mini" }`，以兼容 opencode 1.14+ 的 HTTP schema。
+- 如果模型名不能写成 `provider/model`，可以在模型配置里显式传入 `parameters.opencode_model`：
+
+```json
+{
+  "model": "fast-value-model",
+  "resource": "fast-model-pool",
+  "parameters": {
+    "opencode_model": {
+      "providerID": "openai",
+      "modelID": "gpt-5-mini"
+    }
+  }
+}
+```
+
 - `resource` 是模型资源池名称；未配置时默认使用 `model` 字符串作为资源池名称。
 - `model_resources` 配置每个资源池的并发度，这是主要限流方式。
 - `concurrency.global` 是 scheduler worker 总数，通常设置为各模型资源池并发度之和或略高。

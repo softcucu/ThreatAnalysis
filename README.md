@@ -224,13 +224,13 @@ python3 scripts/run_threat_analysis.py \
   --run-id demo-run
 ```
 
-默认情况下，脚本会执行：
+默认情况下，脚本会为本次运行选择一个未占用的随机端口，并执行：
 
 ```bash
-opencode serve --hostname 127.0.0.1 --port 4096
+opencode serve --hostname 127.0.0.1 --port <auto-port>
 ```
 
-然后通过 `http://127.0.0.1:4096` 连接 opencode server。
+然后通过对应的 `http://127.0.0.1:<auto-port>` 连接 opencode server，避免复用旧的 `4096` 进程。
 
 如果 opencode server 已经手动启动：
 
@@ -263,8 +263,8 @@ python3 scripts/run_threat_analysis.py \
 
 常用参数：
 
-- `--opencode-base-url`：opencode server 地址。
-- `--opencode-command`：启动 opencode serve 的命令字符串。
+- `--opencode-base-url`：opencode server 地址；未传且自动启动 opencode 时使用随机未占用端口。
+- `--opencode-command`：启动 opencode serve 的命令字符串；未传 `--opencode-base-url` 时，其中的 `--port` 会被本次运行的随机端口覆盖。
 - `--opencode-directory`：opencode 运行的项目目录；runner 会把威胁分析所需的所有 skills 安装到该目录下的 `.opencode/skills/`，并把该路径写入此目录的 `opencode.json` 中的 `skills.paths`。
 - `--opencode-password`：basic auth 密码；未传时读取 `OPENCODE_PASSWORD`。
 - `--opencode-agent`：发送给 opencode 的 agent 名称。
@@ -284,7 +284,6 @@ config = load_runtime_config("agent-runtime.json")
 skill_paths = default_skill_paths()
 
 runner = OpenCodeAgentRunner(
-    base_url="http://127.0.0.1:4096",
     start_command=("opencode", "serve", "--hostname", "127.0.0.1", "--port", "4096"),
     skill_paths=(
         skill_paths.value_asset_map,
@@ -318,6 +317,8 @@ runner = OpenCodeAgentRunner(
     ),
 )
 ```
+
+未显式传入 `base_url` 时，runner 会把 `--port` 改写为本次运行选出的随机未占用端口。
 
 如果启用了 opencode server basic auth：
 

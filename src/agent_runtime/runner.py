@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import socket
 import subprocess
 import threading
 import time
@@ -169,7 +170,7 @@ class OpenCodeAgentRunner:
     def __init__(
         self,
         *,
-        base_url: str = "http://127.0.0.1:4096",
+        base_url: str | None = None,
         start_command: tuple[str, ...] | list[str] | None = (
             "opencode",
             "serve",
@@ -190,8 +191,9 @@ class OpenCodeAgentRunner:
         use_skill_command: bool = False,
         skill_paths: Sequence[str | Path] = (),
     ) -> None:
-        self.base_url = base_url.rstrip("/")
         self.start_command = None if start_command is None else tuple(start_command)
+        self.base_url = (base_url or "http://127.0.0.1:4096").rstrip("/")
+        self._auto_port = base_url is None and self.start_command is not None
         self.cwd = cwd
         self.env = None if env is None else dict(env)
         self.timeout = timeout
@@ -216,19 +218,16 @@ class OpenCodeAgentRunner:
     def start(self) -> None:
         with self._start_lock:
             self._install_configured_skills()
-            if self._healthcheck():
+            if self._process is not None and self._process.poll() is None and self._healthcheck():
                 return
             if self.start_command is None:
+                if self._healthcheck():
+                    return
                 raise RuntimeError(f"OpenCode server is not reachable: {self.base_url}")
 
-            self._process = subprocess.Popen(
-                self.start_command,
-                cwd=self.cwd,
-                env=self.env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            directory = self._directory()
+            start_command = self._prepare_start_command()
+            self._process = self._popen(start_command, directory)
 
             deadline = time.monotonic() + self.startup_timeout
             while time.monotonic() < deadline:
@@ -241,6 +240,16 @@ class OpenCodeAgentRunner:
                 time.sleep(0.2)
 
             raise RuntimeError(f"Timed out waiting for OpenCode server: {self.base_url}")
+
+    def _popen(self, command: Sequence[str], directory: Path) -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            tuple(command),
+            cwd=str(directory),
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
     def stop(self) -> None:
         if self._process is None:
@@ -358,6 +367,19 @@ class OpenCodeAgentRunner:
 
     def _directory(self) -> Path:
         return Path(self.cwd).expanduser().resolve() if self.cwd else Path.cwd().resolve()
+
+    def _prepare_start_command(self) -> tuple[str, ...]:
+        if self.start_command is None:
+            raise RuntimeError("OpenCode start command is not configured")
+        command = tuple(self.start_command)
+        if not self._auto_port:
+            return command
+
+        hostname = _command_option(command, "--hostname") or "127.0.0.1"
+        port = _find_free_port(hostname)
+        command = _replace_or_append_option(command, "--port", str(port))
+        self.base_url = f"http://{_client_host(hostname)}:{port}"
+        return command
 
     def _install_configured_skills(self) -> None:
         if not self.install_skills:
@@ -556,6 +578,54 @@ def _opencode_model(model_config: ModelConfig) -> dict[str, str]:
 def _opencode_model_string(model_config: ModelConfig) -> str:
     model = _opencode_model(model_config)
     return f"{model['providerID']}/{model['modelID']}"
+
+
+def _command_option(command: Sequence[str], option: str) -> str | None:
+    for index, part in enumerate(command):
+        if part == option and index + 1 < len(command):
+            return command[index + 1]
+        prefix = option + "="
+        if part.startswith(prefix):
+            return part[len(prefix):]
+    return None
+
+
+def _replace_or_append_option(command: Sequence[str], option: str, value: str) -> tuple[str, ...]:
+    parts = list(command)
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part == option:
+            if index + 1 < len(parts):
+                parts[index + 1] = value
+            else:
+                parts.append(value)
+            return tuple(parts)
+        prefix = option + "="
+        if part.startswith(prefix):
+            parts[index] = option + "=" + value
+            return tuple(parts)
+        index += 1
+    parts.extend((option, value))
+    return tuple(parts)
+
+
+def _find_free_port(hostname: str) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((_bind_host(hostname), 0))
+        return int(sock.getsockname()[1])
+
+
+def _bind_host(hostname: str) -> str:
+    if hostname in {"0.0.0.0", "::", ""}:
+        return "127.0.0.1"
+    return hostname
+
+
+def _client_host(hostname: str) -> str:
+    if hostname in {"0.0.0.0", "::", ""}:
+        return "127.0.0.1"
+    return hostname
 
 
 def _skill_invocation_prompt(skill_name: str, prompt: str) -> str:

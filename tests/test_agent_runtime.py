@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from agent_runtime import (
@@ -335,6 +336,40 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual((installed / "second-skill" / "SKILL.md").read_text(), "# Second\n")
             opencode_config = json.loads((Path(workspace) / "opencode.json").read_text())
             self.assertEqual(opencode_config["skills"]["paths"], [str(installed.resolve())])
+
+    def test_opencode_runner_starts_on_random_free_port(self):
+        class FakeProcess:
+            def poll(self):
+                return None
+
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.started = False
+                self.recorded_command = ()
+                self.recorded_directory = None
+
+            def _healthcheck(self):
+                return self.started
+
+            def _popen(self, command, directory):
+                self.started = True
+                self.recorded_command = tuple(command)
+                self.recorded_directory = directory
+                return FakeProcess()
+
+        with tempfile.TemporaryDirectory() as workspace:
+            runner = FakeOpenCodeRunner(
+                cwd=workspace,
+                start_command=("opencode", "serve", "--hostname", "127.0.0.1", "--port", "4096"),
+            )
+            with mock.patch("agent_runtime.runner._find_free_port", return_value=45678):
+                runner.start()
+
+        port = runner.recorded_command[runner.recorded_command.index("--port") + 1]
+        self.assertNotEqual(port, "4096")
+        self.assertEqual(runner.base_url, f"http://127.0.0.1:{port}")
+        self.assertEqual(runner.recorded_directory, Path(workspace).resolve())
 
     def test_progress_reporter_outputs_key_task_steps(self):
         def run(task, model_config, prompt):

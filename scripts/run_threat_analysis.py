@@ -98,13 +98,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--opencode-base-url",
-        default="http://127.0.0.1:4096",
-        help="opencode serve 地址，默认 http://127.0.0.1:4096。",
+        default=None,
+        help="opencode serve 地址；未传且会启动 opencode 时自动选择随机未占用端口。",
     )
     parser.add_argument(
         "--opencode-command",
         default="opencode serve --hostname 127.0.0.1 --port 4096",
-        help="启动 opencode serve 的命令字符串。",
+        help="启动 opencode serve 的命令字符串；未传 --opencode-base-url 时其中 --port 会被随机未占用端口覆盖。",
     )
     parser.add_argument(
         "--opencode-directory",
@@ -169,6 +169,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
     layout = ThreatAnalysisLayout.for_run(args.artifacts_root, run_id)
     start_command = None if args.no_start_opencode else tuple(shlex.split(args.opencode_command))
+    base_url = args.opencode_base_url
+    if args.no_start_opencode and base_url is None:
+        base_url = "http://127.0.0.1:4096"
     password = args.opencode_password or os.environ.get("OPENCODE_PASSWORD")
     progress_enabled = (
         config.progress_enabled if args.print_progress is None else bool(args.print_progress)
@@ -177,7 +180,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     skill_paths = default_skill_paths(args.project_root)
 
     runner = OpenCodeAgentRunner(
-        base_url=args.opencode_base_url,
+        base_url=base_url,
         start_command=start_command,
         cwd=args.opencode_directory,
         timeout=args.server_timeout,
@@ -194,9 +197,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         ),
     )
 
-    progress.emit(f"opencode server check started: base_url={args.opencode_base_url}")
+    progress.emit(f"opencode server check started: base_url={base_url or 'auto'}")
     with runner:
-        progress.emit(f"opencode server ready: base_url={args.opencode_base_url}")
+        progress.emit(f"opencode server ready: base_url={runner.base_url}")
         scheduler = AgentScheduler(
             runner=runner,
             model_router=ModelRouter(config),

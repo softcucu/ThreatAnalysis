@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ThreatAnalysis Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>威胁分析结果</h1>
+          <p id="summaryText">未加载产物</p>
+        </div>
+        <section class="loaders" aria-label="导入产物">
+          <label>
+            <span>价值资产</span>
+            <input id="valueAssetsInput" type="file" accept="application/json,.json" />
+          </label>
+          <label>
+            <span>高风险模块</span>
+            <input id="highRiskModulesInput" type="file" accept="application/json,.json" />
+          </label>
+          <label>
+            <span>攻击树</span>
+            <input id="attackTreesInput" type="file" accept="application/json,.json" />
+          </label>
+        </section>
+      </header>
+
+      <nav class="tabs" aria-label="结果页签">
+        <button class="tab is-active" type="button" data-tab="valueAssets">价值资产</button>
+        <button class="tab" type="button" data-tab="highRiskModules">高风险模块</button>
+        <button class="tab" type="button" data-tab="internalNodes">内部节点</button>
+        <button class="tab" type="button" data-tab="attackTrees">攻击树</button>
+      </nav>
+
+      <section id="valueAssets" class="tab-panel is-active" aria-labelledby="valueAssets-tab">
+        <div class="panel-heading">
+          <h2>价值资产</h2>
+          <output id="valueAssetsCount">0 项</output>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>资产名</th>
+                <th>资产类别</th>
+                <th>资产描述</th>
+                <th>攻击损失</th>
+                <th>判断为价值资产的原因</th>
+              </tr>
+            </thead>
+            <tbody id="valueAssetsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="highRiskModules" class="tab-panel" aria-labelledby="highRiskModules-tab">
+        <div class="panel-heading">
+          <h2>高风险模块</h2>
+          <output id="highRiskModulesCount">0 项</output>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>模块名称</th>
+                <th>代码目录</th>
+                <th>面临威胁</th>
+                <th>管理控制</th>
+                <th>不可信数据</th>
+                <th>安全相关</th>
+                <th>敏感数据</th>
+                <th>Web 处理</th>
+                <th>外部暴露面</th>
+                <th>判断原因</th>
+              </tr>
+            </thead>
+            <tbody id="highRiskModulesBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="internalNodes" class="tab-panel" aria-labelledby="internalNodes-tab">
+        <div class="panel-heading">
+          <h2>内部节点</h2>
+          <output id="internalNodesCount">0 项</output>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>内部节点名称</th>
+                <th>描述</th>
+              </tr>
+            </thead>
+            <tbody id="internalNodesBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="attackTrees" class="tab-panel" aria-labelledby="attackTrees-tab">
+        <div class="panel-heading">
+          <h2>攻击树</h2>
+          <output id="attackTreesCount">0 棵</output>
+        </div>
+        <div id="attackTreesCanvas" class="tree-list"></div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

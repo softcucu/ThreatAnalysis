@@ -1,0 +1,46 @@
+{
+  "models": {
+    "value_asset_map": [
+      {
+        "model": "openai/gpt-5-mini",
+        "resource": "fast-model-pool"
+      },
+      {
+        "model": "anthropic/claude-sonnet-4",
+        "resource": "backup-model-pool"
+      }
+    ],
+    "high_risk_module_map": {
+      "model": "openai/gpt-5-mini",
+      "resource": "fast-model-pool"
+    },
+    "high_risk_module_merge": {
+      "model": "openai/gpt-5",
+      "resource": "reasoning-model-pool"
+    },
+    "attack_tree_by_asset": [
+      {
+        "model": "openai/gpt-5",
+        "resource": "reasoning-model-pool"
+      },
+      {
+        "model": "anthropic/claude-opus-4",
+        "resource": "reasoning-model-pool"
+      }
+    ]
+  },
+  "model_resources": {
+    "fast-model-pool": {
+      "concurrency": 4
+    },
+    "backup-model-pool": {
+      "concurrency": 2
+    },
+    "reasoning-model-pool": {
+      "concurrency": 1
+    }
+  },
+  "concurrency": {
+    "global": 7
+  }
+}

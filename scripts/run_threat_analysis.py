@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Command line entrypoint for running the threat analysis pipeline."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import sys
+import time
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from agent_runtime import (  # noqa: E402
+    AgentScheduler,
+    AgentSubmitter,
+    ModelRouter,
+    OpenCodeAgentRunner,
+    load_runtime_config,
+)
+from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline  # noqa: E402
+from threat_analysis_harness.skills import default_skill_paths  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        result = run(args)
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Threat analysis failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run ThreatAnalysis with opencode serve.",
+    )
+    parser.add_argument(
+        "-c",
+        "--config",
+        default="agent-runtime.json",
+        help="模型与并发配置 JSON，默认 agent-runtime.json。",
+    )
+    parser.add_argument(
+        "-i",
+        "--input",
+        action="append",
+        required=True,
+        help="输入文件或目录，可重复传入。",
+    )
+    parser.add_argument(
+        "--high-risk-batch",
+        action="append",
+        nargs="+",
+        help="高风险模块识别输入 batch。可重复传入；未传时使用 --input。",
+    )
+    parser.add_argument(
+        "--attack-tree-context",
+        action="append",
+        default=[],
+        help="攻击树额外上下文文件，可重复传入。",
+    )
+    parser.add_argument(
+        "--artifacts-root",
+        default="artifacts",
+        help="产物根目录，默认 artifacts。",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="本次运行 ID；未传时自动生成。",
+    )
+    parser.add_argument(
+        "--project-root",
+        default=str(PROJECT_ROOT),
+        help="项目根目录，用于定位 skills，默认脚本所在仓库根目录。",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="等待每批 agent 任务的超时时间，单位秒。",
+    )
+    parser.add_argument(
+        "--opencode-base-url",
+        default="http://127.0.0.1:4096",
+        help="opencode serve 地址，默认 http://127.0.0.1:4096。",
+    )
+    parser.add_argument(
+        "--opencode-command",
+        default="opencode serve --hostname 127.0.0.1 --port 4096",
+        help="启动 opencode serve 的命令字符串。",
+    )
+    parser.add_argument(
+        "--no-start-opencode",
+        action="store_true",
+        help="不启动 opencode serve，只连接已有 server。",
+    )
+    parser.add_argument(
+        "--opencode-username",
+        default="opencode",
+        help="opencode basic auth 用户名。",
+    )
+    parser.add_argument(
+        "--opencode-password",
+        default=None,
+        help="opencode basic auth 密码；未传时读取 OPENCODE_PASSWORD。",
+    )
+    parser.add_argument(
+        "--opencode-agent",
+        default=None,
+        help="发送给 opencode 的 agent 名称。",
+    )
+    parser.add_argument(
+        "--delete-session",
+        action="store_true",
+        help="任务完成后删除对应 opencode session。",
+    )
+    parser.add_argument(
+        "--server-timeout",
+        type=float,
+        default=None,
+        help="opencode HTTP 请求超时时间，单位秒。",
+    )
+    parser.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=30.0,
+        help="等待 opencode serve 启动的超时时间，单位秒。",
+    )
+    return parser
+
+
+def run(args: argparse.Namespace) -> dict[str, object]:
+    config = load_runtime_config(args.config)
+    run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
+    layout = ThreatAnalysisLayout.for_run(args.artifacts_root, run_id)
+    start_command = None if args.no_start_opencode else tuple(shlex.split(args.opencode_command))
+    password = args.opencode_password or os.environ.get("OPENCODE_PASSWORD")
+
+    runner = OpenCodeAgentRunner(
+        base_url=args.opencode_base_url,
+        start_command=start_command,
+        timeout=args.server_timeout,
+        startup_timeout=args.startup_timeout,
+        username=args.opencode_username,
+        password=password,
+        agent=args.opencode_agent,
+        delete_session=args.delete_session,
+    )
+
+    with runner:
+        scheduler = AgentScheduler(
+            runner=runner,
+            model_router=ModelRouter(config),
+        )
+        with scheduler:
+            pipeline = ThreatAnalysisPipeline(
+                submitter=AgentSubmitter(scheduler),
+                layout=layout,
+                skill_paths=default_skill_paths(args.project_root),
+            )
+            result = pipeline.run(
+                input_files=[Path(path) for path in args.input],
+                high_risk_input_batches=_high_risk_batches(args.high_risk_batch),
+                attack_tree_context_files=[Path(path) for path in args.attack_tree_context],
+                timeout=args.timeout,
+            )
+
+    return {
+        "run_id": run_id,
+        "artifacts_root": str(Path(args.artifacts_root)),
+        "value_assets": len(result.value_assets),
+        "high_risk_modules": len(result.high_risk_modules),
+        "attack_trees": len(result.attack_trees.get("attack_trees", [])),
+        "outputs": {
+            "value_assets": str(layout.value_assets_final_dir / "value-assets.json"),
+            "high_risk_modules": str(
+                layout.high_risk_final_dir / "high-risk-module-merge.json"
+            ),
+            "attack_trees": str(layout.attack_trees_final_dir / "attack_trees.json"),
+        },
+    }
+
+
+def _high_risk_batches(raw_batches: list[list[str]] | None) -> list[list[Path]] | None:
+    if not raw_batches:
+        return None
+    return [[Path(path) for path in batch] for batch in raw_batches]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

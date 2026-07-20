@@ -483,8 +483,13 @@ class OpenCodeAgentRunner:
         if self.password is not None:
             token = base64.b64encode(f"{self.username}:{self.password}".encode("utf-8"))
             req.add_header("Authorization", "Basic " + token.decode("ascii"))
+        if query and query.get("directory"):
+            req.add_header(
+                "x-opencode-directory",
+                parse.quote(str(query["directory"]), safe="/:\\"),
+            )
         try:
-            with request.urlopen(req, timeout=self.timeout) as response:
+            with self._urlopen(req) as response:
                 raw = response.read().decode("utf-8")
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -492,6 +497,10 @@ class OpenCodeAgentRunner:
         if not raw:
             return None
         return json.loads(raw)
+
+    def _urlopen(self, req: request.Request) -> object:
+        opener = request.build_opener(request.ProxyHandler({}))
+        return opener.open(req, timeout=self.timeout)
 
 
 def _session_id(session: object) -> str | None:

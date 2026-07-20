@@ -499,6 +499,39 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("example-skill", result.error)
         self.assertIn("other-skill", result.error)
 
+    def test_opencode_request_includes_directory_header(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def fake_urlopen(req):
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            return FakeResponse()
+
+        runner = OpenCodeAgentRunner(start_command=None)
+        runner._urlopen = fake_urlopen
+        response = runner._request_json(
+            "GET",
+            "/skill",
+            query={"directory": "/tmp/runtime workspace"},
+        )
+
+        self.assertEqual(response, {"ok": True})
+        self.assertIn("directory=%2Ftmp%2Fruntime+workspace", captured["url"])
+        self.assertEqual(
+            captured["headers"]["X-opencode-directory"],
+            "/tmp/runtime%20workspace",
+        )
+
     def test_opencode_runner_supports_explicit_model_parameters_for_skill_command(self):
         runner = OpenCodeAgentRunner(start_command=None)
         payload = runner._command_payload(

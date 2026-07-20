@@ -207,13 +207,10 @@ def _parse_bare_json_item_sequences(text: str) -> list[list[Any]]:
                 break
             values.append(value)
 
-            separator = _skip_whitespace(text, end)
-            if separator >= len(text) or text[separator] != ",":
+            next_value = _find_next_json_start(text, end)
+            if next_value is None:
                 break
-
-            next_value = _skip_whitespace(text, separator + 1)
-            if next_value >= len(text) or text[next_value] not in "{[":
-                values = []
+            if not _is_bare_item_separator(text[end:next_value]):
                 break
             current = next_value
 
@@ -223,10 +220,20 @@ def _parse_bare_json_item_sequences(text: str) -> list[list[Any]]:
     return arrays
 
 
-def _skip_whitespace(text: str, index: int) -> int:
-    while index < len(text) and text[index].isspace():
+def _find_next_json_start(text: str, index: int) -> int | None:
+    while index < len(text):
+        if text[index] in "{[":
+            return index
         index += 1
-    return index
+    return None
+
+
+def _is_bare_item_separator(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return True
+    allowed = set(",-*.)、0123456789")
+    return all(char in allowed or char.isspace() for char in stripped)
 
 
 def validate_json_schema(value: Any, schema: Mapping[str, Any], path: str = "$") -> None:

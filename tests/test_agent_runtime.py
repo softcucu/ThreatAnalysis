@@ -441,6 +441,36 @@ class AgentRuntimeTests(unittest.TestCase):
             ],
         )
 
+    def test_schema_parser_wraps_newline_separated_items_for_array_schema(self):
+        schema = {"type": "array", "items": OUTPUT_SCHEMA}
+        raw = (
+            '{"task_id": "task-1", "model": "test-model"}\n'
+            '{"task_id": "task-2", "model": "test-model"}'
+        )
+
+        self.assertEqual(
+            parse_json_output_for_schema(raw, schema),
+            [
+                {"task_id": "task-1", "model": "test-model"},
+                {"task_id": "task-2", "model": "test-model"},
+            ],
+        )
+
+    def test_schema_parser_wraps_bulleted_items_for_array_schema(self):
+        schema = {"type": "array", "items": OUTPUT_SCHEMA}
+        raw = (
+            '1. {"task_id": "task-1", "model": "test-model"}\n'
+            '2. {"task_id": "task-2", "model": "test-model"}'
+        )
+
+        self.assertEqual(
+            parse_json_output_for_schema(raw, schema),
+            [
+                {"task_id": "task-1", "model": "test-model"},
+                {"task_id": "task-2", "model": "test-model"},
+            ],
+        )
+
     def test_opencode_runner_installs_skill_and_invokes_it_in_message_prompt(self):
         requests = []
 
@@ -456,39 +486,22 @@ class AgentRuntimeTests(unittest.TestCase):
                     return {"id": "session-001", "title": payload.get("title")}
                 if method == "POST" and path == "/session/session-001/message":
                     return {
+                        "info": {
+                            "id": "assistant-1",
+                            "role": "assistant",
+                            "sessionID": "session-001",
+                        },
                         "parts": [
                             {
                                 "type": "text",
-                                "text": "正在分析，还没有最终 JSON。",
-                            }
-                        ]
-                    }
-                if method == "POST" and path == "/api/session/session-001/wait":
-                    return None
-                if method == "GET" and path == "/api/session/session-001/message":
-                    return {
-                        "items": [
-                            {
-                                "id": "assistant-1",
-                                "type": "assistant",
-                                "time": {"created": 1, "completed": 2},
-                                "agent": "build",
-                                "model": {"id": "test-model", "providerID": "test-provider"},
-                                "content": [
-                                    {"type": "reasoning", "id": "reasoning-1", "text": "thinking"},
+                                "text": json.dumps(
                                     {
-                                        "type": "text",
-                                        "text": json.dumps(
-                                            {
-                                                "task_id": "task-1",
-                                                "model": "test-provider/test-model",
-                                            }
-                                        ),
-                                    },
-                                ],
-                            }
+                                        "task_id": "task-1",
+                                        "model": "test-provider/test-model",
+                                    }
+                                ),
+                            },
                         ],
-                        "cursor": {},
                     }
                 raise AssertionError((method, path, payload, query))
 
@@ -509,21 +522,75 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIsNone(requests[0][3])
         self.assertEqual(requests[1][1], "/session")
         self.assertEqual(requests[2][1], "/session/session-001/message")
-        self.assertEqual(requests[3][1], "/api/session/session-001/wait")
-        self.assertEqual(requests[4][1], "/api/session/session-001/message")
         self.assertEqual(
             requests[2][2]["model"],
             {"providerID": "test-provider", "modelID": "test-model"},
         )
-        self.assertEqual(requests[4][3]["order"], "desc")
         self.assertEqual(requests[2][2]["parts"][0]["type"], "text")
         self.assertTrue(requests[2][2]["parts"][0]["text"].startswith("/example-skill\n\n"))
         self.assertIn("Produce output.", requests[2][2]["parts"][0]["text"])
         self.assertNotIn("Example Skill", requests[2][2]["parts"][0]["text"])
         self.assertIn('"task_id": "task-1"', raw_text)
-        self.assertNotIn("正在分析", raw_text)
         self.assertEqual(requests[1][3]["directory"], str(Path(tmp).resolve()))
         self.assertIn("Example Skill", installed_skill_text)
+
+    def test_opencode_runner_fetches_public_messages_when_prompt_response_is_not_assistant(self):
+        requests = []
+
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def start(self):
+                return None
+
+            def _request_json(self, method, path, payload=None, *, query=None):
+                requests.append((method, path, payload, query))
+                if method == "GET" and path == "/skill":
+                    return [{"name": "example-skill", "location": "test", "content": ""}]
+                if method == "POST" and path == "/session":
+                    return {"id": "session-001", "title": payload.get("title")}
+                if method == "POST" and path == "/session/session-001/message":
+                    return {
+                        "info": {"id": "user-1", "role": "user", "sessionID": "session-001"},
+                        "parts": [{"type": "text", "text": "Produce output."}],
+                    }
+                if method == "GET" and path == "/session/session-001/message":
+                    return [
+                        {
+                            "info": {"id": "user-1", "role": "user", "sessionID": "session-001"},
+                            "parts": [{"type": "text", "text": "Produce output."}],
+                        },
+                        {
+                            "info": {
+                                "id": "assistant-1",
+                                "role": "assistant",
+                                "sessionID": "session-001",
+                            },
+                            "parts": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        {
+                                            "task_id": "task-1",
+                                            "model": "test-provider/test-model",
+                                        }
+                                    ),
+                                }
+                            ],
+                        },
+                    ]
+                raise AssertionError((method, path, payload, query))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FakeOpenCodeRunner(start_command=None, cwd=tmp),
+                model_router=opencode_router(),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(result.output["model"], "test-provider/test-model")
+        self.assertEqual(requests[3][1], "/session/session-001/message")
+        self.assertEqual(requests[3][3]["limit"], "20")
 
     def test_opencode_runner_fails_when_installed_skill_is_not_visible(self):
         class FakeOpenCodeRunner(OpenCodeAgentRunner):

@@ -336,7 +336,7 @@ runner = OpenCodeAgentRunner(
 )
 ```
 
-runner 每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`。使用 opencode runner 时，程序会在发送 message 后等待 session 进入 idle，再读取最终 assistant 文本并写入 `<output_path>.raw.txt`；运行框架随后从该最终文本中提取 JSON，完成 JSON schema 校验后，再由程序将规范化 JSON 写入 `output_path`。
+runner 每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`。使用 opencode runner 时，程序会通过 `/session/{id}/message` 发送 message 并读取返回的 assistant 文本；如果返回内容不是 assistant 消息，会回查 `/session/{id}/message` 的消息列表。最终 assistant 文本会写入 `<output_path>.raw.txt`；运行框架随后从该最终文本中提取 JSON，完成 JSON schema 校验后，再由程序将规范化 JSON 写入 `output_path`。
 
 ## Web 查看页
 

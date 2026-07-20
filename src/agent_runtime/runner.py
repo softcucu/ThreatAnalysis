@@ -306,7 +306,7 @@ class OpenCodeAgentRunner:
                     message_payload,
                     query=self._opencode_query(directory),
                 )
-                response = self._wait_for_final_message(session_id, directory) or response
+            response = self._assistant_response_or_latest(response, session_id, directory) or response
             output_text = _extract_response_text(response)
             raw_output_path.write_text(output_text, encoding="utf-8")
             log_file.write_text(
@@ -319,7 +319,6 @@ class OpenCodeAgentRunner:
                         "task_type": task.task_type,
                         "skill": skill_name,
                         "model": model_config.model,
-                        "waited_for_completion": not self.use_skill_command,
                         "response": response,
                     },
                     ensure_ascii=False,
@@ -424,25 +423,23 @@ class OpenCodeAgentRunner:
             payload["tools"] = model_config.parameters["tools"]
         return payload
 
-    def _wait_for_final_message(self, session_id: str, directory: Path) -> object | None:
-        try:
-            self._request_json(
-                "POST",
-                f"/api/session/{session_id}/wait",
-                query=self._opencode_query(directory),
-            )
-        except RuntimeError as exc:
-            if _is_opencode_http_404(exc):
-                return None
-            raise
+    def _assistant_response_or_latest(
+        self,
+        response: object,
+        session_id: str,
+        directory: Path,
+    ) -> object | None:
+        if _assistant_response_text(response).strip():
+            return response
+
         messages = self._request_json(
             "GET",
-            f"/api/session/{session_id}/message",
-            query={**self._opencode_query(directory), "order": "desc", "limit": "20"},
+            f"/session/{session_id}/message",
+            query={**self._opencode_query(directory), "limit": "20"},
         )
         message = _latest_assistant_message(messages)
         if message is None:
-            raise RuntimeError(f"OpenCode session completed without assistant response: {session_id}")
+            return None
         return message
 
     def _verify_skill_available(self, skill_name: str, directory: Path) -> None:
@@ -518,9 +515,16 @@ class OpenCodeAgentRunner:
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"OpenCode HTTP {exc.code} for {method} {path}: {detail}") from exc
-        if not raw:
+        if not raw.strip():
             return None
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            snippet = raw[:300].replace("\n", "\\n")
+            raise RuntimeError(
+                f"OpenCode returned non-JSON response for {method} {path}: {exc}. "
+                f"Response starts with: {snippet!r}"
+            ) from exc
 
     def _urlopen(self, req: request.Request) -> object:
         opener = request.build_opener(request.ProxyHandler({}))
@@ -659,10 +663,10 @@ def _latest_assistant_message(messages: object) -> object | None:
     if not isinstance(items, list):
         return None
 
-    for item in items:
-        if not isinstance(item, Mapping) or item.get("type") != "assistant":
+    for item in reversed(items):
+        if not isinstance(item, Mapping) or _message_role(item) != "assistant":
             continue
-        text = _assistant_message_text(item)
+        text = _assistant_response_text(item)
         if text.strip():
             return {
                 "text": text.strip(),
@@ -671,19 +675,26 @@ def _latest_assistant_message(messages: object) -> object | None:
     return None
 
 
-def _assistant_message_text(message: Mapping[str, object]) -> str:
-    content = message.get("content")
-    if not isinstance(content, list):
+def _assistant_response_text(response: object) -> str:
+    if not isinstance(response, Mapping):
         return ""
 
-    parts: list[str] = []
-    for item in content:
-        if not isinstance(item, Mapping) or item.get("type") != "text":
-            continue
-        text = item.get("text")
-        if isinstance(text, str) and text:
-            parts.append(text)
-    return "\n".join(parts)
+    if _message_role(response) != "assistant":
+        return ""
+    return _collect_text(response)
+
+
+def _message_role(message: Mapping[str, object]) -> str | None:
+    role = message.get("role") or message.get("type")
+    if isinstance(role, str):
+        return role
+
+    info = message.get("info")
+    if isinstance(info, Mapping):
+        role = info.get("role") or info.get("type")
+        if isinstance(role, str):
+            return role
+    return None
 
 
 def _extract_response_text(response: object) -> str:

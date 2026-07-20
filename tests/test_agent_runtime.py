@@ -275,6 +275,40 @@ class AgentRuntimeTests(unittest.TestCase):
             )
             self.assertEqual((installed / "SKILL.md").read_text(encoding="utf-8"), "# Threat Skill\n")
             self.assertEqual((installed / "references" / "catalog.json").read_text(), "[]")
+            opencode_config = json.loads((Path(workspace) / "opencode.json").read_text())
+            self.assertEqual(
+                opencode_config["skills"]["paths"],
+                [str((Path(workspace) / ".opencode" / "skills").resolve())],
+            )
+
+    def test_opencode_skill_install_preserves_existing_config(self):
+        with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as workspace:
+            source = Path(source_tmp) / "threat-skill"
+            source.mkdir()
+            (source / "SKILL.md").write_text("# Threat Skill\n", encoding="utf-8")
+            config_path = Path(workspace) / "opencode.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "provider": {"test": {}},
+                        "skills": {
+                            "paths": ["/existing/skills"],
+                            "urls": ["https://example.test/skill.md"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            install_opencode_skill(source, workspace)
+
+            opencode_config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(opencode_config["provider"], {"test": {}})
+            self.assertEqual(opencode_config["skills"]["urls"], ["https://example.test/skill.md"])
+            self.assertEqual(
+                opencode_config["skills"]["paths"],
+                [str((Path(workspace) / ".opencode" / "skills").resolve()), "/existing/skills"],
+            )
 
     def test_opencode_runner_start_installs_configured_skills(self):
         class FakeOpenCodeRunner(OpenCodeAgentRunner):
@@ -299,6 +333,8 @@ class AgentRuntimeTests(unittest.TestCase):
             installed = Path(workspace) / ".opencode" / "skills"
             self.assertEqual((installed / "first-skill" / "SKILL.md").read_text(), "# First\n")
             self.assertEqual((installed / "second-skill" / "SKILL.md").read_text(), "# Second\n")
+            opencode_config = json.loads((Path(workspace) / "opencode.json").read_text())
+            self.assertEqual(opencode_config["skills"]["paths"], [str(installed.resolve())])
 
     def test_progress_reporter_outputs_key_task_steps(self):
         def run(task, model_config, prompt):
@@ -365,6 +401,8 @@ class AgentRuntimeTests(unittest.TestCase):
 
             def _request_json(self, method, path, payload=None, *, query=None):
                 requests.append((method, path, payload, query))
+                if method == "GET" and path == "/skill":
+                    return [{"name": "example-skill", "location": "test", "content": ""}]
                 if method == "POST" and path == "/session":
                     return {"id": "session-001", "title": payload.get("title")}
                 if method == "POST" and path == "/session/session-001/message":
@@ -418,23 +456,48 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(result.output["model"], "test-provider/test-model")
-        self.assertEqual(requests[0][1], "/session")
-        self.assertEqual(requests[1][1], "/session/session-001/message")
-        self.assertEqual(requests[2][1], "/api/session/session-001/wait")
-        self.assertEqual(requests[3][1], "/api/session/session-001/message")
+        self.assertEqual(requests[0][1], "/skill")
+        self.assertEqual(requests[1][1], "/session")
+        self.assertEqual(requests[2][1], "/session/session-001/message")
+        self.assertEqual(requests[3][1], "/api/session/session-001/wait")
+        self.assertEqual(requests[4][1], "/api/session/session-001/message")
         self.assertEqual(
-            requests[1][2]["model"],
+            requests[2][2]["model"],
             {"providerID": "test-provider", "modelID": "test-model"},
         )
-        self.assertEqual(requests[3][3]["order"], "desc")
-        self.assertEqual(requests[1][2]["parts"][0]["type"], "text")
-        self.assertTrue(requests[1][2]["parts"][0]["text"].startswith("/example-skill\n\n"))
-        self.assertIn("Produce output.", requests[1][2]["parts"][0]["text"])
-        self.assertNotIn("Example Skill", requests[1][2]["parts"][0]["text"])
+        self.assertEqual(requests[4][3]["order"], "desc")
+        self.assertEqual(requests[2][2]["parts"][0]["type"], "text")
+        self.assertTrue(requests[2][2]["parts"][0]["text"].startswith("/example-skill\n\n"))
+        self.assertIn("Produce output.", requests[2][2]["parts"][0]["text"])
+        self.assertNotIn("Example Skill", requests[2][2]["parts"][0]["text"])
         self.assertIn('"task_id": "task-1"', raw_text)
         self.assertNotIn("正在分析", raw_text)
         self.assertEqual(requests[0][3]["directory"], str(Path(tmp).resolve()))
+        self.assertEqual(requests[1][3]["directory"], str(Path(tmp).resolve()))
         self.assertIn("Example Skill", installed_skill_text)
+
+    def test_opencode_runner_fails_when_installed_skill_is_not_visible(self):
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def start(self):
+                return None
+
+            def _request_json(self, method, path, payload=None, *, query=None):
+                if method == "GET" and path == "/skill":
+                    return [{"name": "other-skill", "location": "test", "content": ""}]
+                raise AssertionError((method, path, payload, query))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FakeOpenCodeRunner(start_command=None, cwd=tmp),
+                model_router=opencode_router(),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertIn("OpenCode skill is not visible after install", result.error)
+        self.assertIn("example-skill", result.error)
+        self.assertIn("other-skill", result.error)
 
     def test_opencode_runner_supports_explicit_model_parameters_for_skill_command(self):
         runner = OpenCodeAgentRunner(start_command=None)

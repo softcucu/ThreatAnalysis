@@ -270,6 +270,8 @@ class OpenCodeAgentRunner:
             if self.install_skills:
                 install_opencode_skill(task.skill_path, directory)
             self.start()
+            if self.install_skills:
+                self._verify_skill_available(skill_name, directory)
             session = self._post_json(
                 "/session",
                 {"title": task.task_id},
@@ -421,6 +423,27 @@ class OpenCodeAgentRunner:
             raise RuntimeError(f"OpenCode session completed without assistant response: {session_id}")
         return message
 
+    def _verify_skill_available(self, skill_name: str, directory: Path) -> None:
+        try:
+            skills = self._request_json("GET", "/skill", query=self._opencode_query(directory))
+        except RuntimeError as exc:
+            if _is_opencode_http_404(exc):
+                return
+            raise
+
+        names = _skill_names(skills)
+        if names is None or skill_name in names:
+            return
+
+        visible = ", ".join(sorted(names)) or "(none)"
+        raise RuntimeError(
+            "OpenCode skill is not visible after install: "
+            f"skill={skill_name!r}, directory={str(directory)!r}, "
+            f"skills_dir={str((directory / '.opencode' / 'skills').resolve())!r}, "
+            f"config={str((directory / 'opencode.json').resolve())!r}, "
+            f"visible_skills=[{visible}]"
+        )
+
     def _healthcheck(self) -> bool:
         try:
             self._request_json("GET", "/global/health")
@@ -530,6 +553,21 @@ def _skill_invocation_prompt(skill_name: str, prompt: str) -> str:
 
 def _is_opencode_http_404(exc: RuntimeError) -> bool:
     return "OpenCode HTTP 404 " in str(exc)
+
+
+def _skill_names(skills: object) -> set[str] | None:
+    if isinstance(skills, Mapping):
+        items = skills.get("items")
+    else:
+        items = skills
+    if not isinstance(items, list):
+        return None
+
+    names: set[str] = set()
+    for item in items:
+        if isinstance(item, Mapping) and item.get("name"):
+            names.add(str(item["name"]))
+    return names
 
 
 def _latest_assistant_message(messages: object) -> object | None:

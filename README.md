@@ -210,7 +210,7 @@ cp agent-runtime.example.json agent-runtime.json
 - `concurrency.by_task_type` 仍可作为兼容性的额外限制，但默认不需要配置。
 - `progress.enabled` 是全局进度打印开关。开启后会向 stderr 输出 opencode 连接检查、pipeline 阶段、任务排队、任务开始、任务完成和失败信息；关闭后只保留最终 JSON 输出。
 
-opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架中的 `OpenCodeAgentRunner` 会在启动或连接 server 前，把配置的所有 skills 同步到 opencode 项目目录的 `.opencode/skills/<skill-name>/`；每个 `AgentTask` 会创建独立 opencode session，并通过 `/session/{id}/message` 发送 `/<skill-name>` 开头的提示词调用该 skill。运行时 prompt 只包含当前任务说明、输入文件和 JSON schema，不内联 skill 正文、模型配置或输出路径；prompt 会要求模型直接返回 JSON 文本，不要写结果文件。
+opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架中的 `OpenCodeAgentRunner` 会在启动或连接 server 前，把配置的所有 skills 同步到 opencode 项目目录的 `.opencode/skills/<skill-name>/`，并在该目录的 `opencode.json` 中配置 `skills.paths` 指向同一个 `.opencode/skills` 目录；每个 `AgentTask` 会创建独立 opencode session，并通过 `/session/{id}/message` 发送 `/<skill-name>` 开头的提示词调用该 skill。运行时 prompt 只包含当前任务说明、输入文件和 JSON schema，不内联 skill 正文、模型配置或输出路径；prompt 会要求模型直接返回 JSON 文本，不要写结果文件。
 
 ## 命令行启动
 
@@ -265,7 +265,7 @@ python3 scripts/run_threat_analysis.py \
 
 - `--opencode-base-url`：opencode server 地址。
 - `--opencode-command`：启动 opencode serve 的命令字符串。
-- `--opencode-directory`：opencode 运行的项目目录；runner 会把威胁分析所需的所有 skills 安装到该目录下的 `.opencode/skills/`。
+- `--opencode-directory`：opencode 运行的项目目录；runner 会把威胁分析所需的所有 skills 安装到该目录下的 `.opencode/skills/`，并把该路径写入此目录的 `opencode.json` 中的 `skills.paths`。
 - `--opencode-password`：basic auth 密码；未传时读取 `OPENCODE_PASSWORD`。
 - `--opencode-agent`：发送给 opencode 的 agent 名称。
 - `--timeout`：等待每批 agent 任务的超时时间。

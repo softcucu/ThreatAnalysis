@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, Sequence
 from urllib import error, parse, request
 
 from agent_runtime.model_router import ModelConfig
@@ -187,7 +187,8 @@ class OpenCodeAgentRunner:
         agent: str | None = None,
         delete_session: bool = False,
         install_skills: bool = True,
-        use_skill_command: bool = True,
+        use_skill_command: bool = False,
+        skill_paths: Sequence[str | Path] = (),
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.start_command = None if start_command is None else tuple(start_command)
@@ -201,6 +202,7 @@ class OpenCodeAgentRunner:
         self.delete_session = delete_session
         self.install_skills = install_skills
         self.use_skill_command = use_skill_command
+        self.skill_paths = tuple(skill_paths)
         self._process: subprocess.Popen[str] | None = None
         self._start_lock = threading.Lock()
 
@@ -213,6 +215,7 @@ class OpenCodeAgentRunner:
 
     def start(self) -> None:
         with self._start_lock:
+            self._install_configured_skills()
             if self._healthcheck():
                 return
             if self.start_command is None:
@@ -283,7 +286,10 @@ class OpenCodeAgentRunner:
                     query=self._opencode_query(directory),
                 )
             else:
-                message_payload = self._message_payload(prompt, model_config)
+                message_payload = self._message_payload(
+                    _skill_invocation_prompt(skill_name, prompt),
+                    model_config,
+                )
                 response = self._post_json(
                     f"/session/{session_id}/message",
                     message_payload,
@@ -348,6 +354,13 @@ class OpenCodeAgentRunner:
 
     def _directory(self) -> Path:
         return Path(self.cwd).expanduser().resolve() if self.cwd else Path.cwd().resolve()
+
+    def _install_configured_skills(self) -> None:
+        if not self.install_skills:
+            return
+        directory = self._directory()
+        for skill_path in self.skill_paths:
+            install_opencode_skill(skill_path, directory)
 
     def _opencode_query(self, directory: Path) -> dict[str, str]:
         return {"directory": str(directory)}
@@ -486,6 +499,10 @@ def _opencode_model(model_config: ModelConfig) -> dict[str, str]:
 def _opencode_model_string(model_config: ModelConfig) -> str:
     model = _opencode_model(model_config)
     return f"{model['providerID']}/{model['modelID']}"
+
+
+def _skill_invocation_prompt(skill_name: str, prompt: str) -> str:
+    return f"/{skill_name}\n\n{prompt}"
 
 
 def _extract_response_text(response: object) -> str:

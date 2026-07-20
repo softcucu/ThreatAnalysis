@@ -276,6 +276,30 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual((installed / "SKILL.md").read_text(encoding="utf-8"), "# Threat Skill\n")
             self.assertEqual((installed / "references" / "catalog.json").read_text(), "[]")
 
+    def test_opencode_runner_start_installs_configured_skills(self):
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def _healthcheck(self):
+                return True
+
+        with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as workspace:
+            first = Path(source_tmp) / "first-skill"
+            second = Path(source_tmp) / "second-skill"
+            first.mkdir()
+            second.mkdir()
+            (first / "SKILL.md").write_text("# First\n", encoding="utf-8")
+            (second / "SKILL.md").write_text("# Second\n", encoding="utf-8")
+
+            runner = FakeOpenCodeRunner(
+                start_command=None,
+                cwd=workspace,
+                skill_paths=(first, second),
+            )
+            runner.start()
+
+            installed = Path(workspace) / ".opencode" / "skills"
+            self.assertEqual((installed / "first-skill" / "SKILL.md").read_text(), "# First\n")
+            self.assertEqual((installed / "second-skill" / "SKILL.md").read_text(), "# Second\n")
+
     def test_progress_reporter_outputs_key_task_steps(self):
         def run(task, model_config, prompt):
             return json.dumps({"task_id": task.task_id, "model": model_config.model})
@@ -332,7 +356,7 @@ class AgentRuntimeTests(unittest.TestCase):
             {"task_id": "task-1", "model": "test-model"},
         )
 
-    def test_opencode_runner_creates_session_installs_skill_and_sends_model(self):
+    def test_opencode_runner_installs_skill_and_invokes_it_in_message_prompt(self):
         requests = []
 
         class FakeOpenCodeRunner(OpenCodeAgentRunner):
@@ -343,7 +367,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 requests.append((method, path, payload, query))
                 if method == "POST" and path == "/session":
                     return {"id": "session-001", "title": payload.get("title")}
-                if method == "POST" and path == "/session/session-001/command":
+                if method == "POST" and path == "/session/session-001/message":
                     model = payload["model"]
                     return {
                         "parts": [
@@ -352,7 +376,7 @@ class AgentRuntimeTests(unittest.TestCase):
                                 "text": json.dumps(
                                     {
                                         "task_id": "task-1",
-                                        "model": model,
+                                        "model": f"{model['providerID']}/{model['modelID']}",
                                     }
                                 ),
                             }
@@ -373,11 +397,15 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(result.output["model"], "test-provider/test-model")
         self.assertEqual(requests[0][1], "/session")
-        self.assertEqual(requests[1][1], "/session/session-001/command")
-        self.assertEqual(requests[1][2]["command"], "example-skill")
-        self.assertEqual(requests[1][2]["model"], "test-provider/test-model")
-        self.assertIn("Produce output.", requests[1][2]["arguments"])
-        self.assertNotIn("Example Skill", requests[1][2]["arguments"])
+        self.assertEqual(requests[1][1], "/session/session-001/message")
+        self.assertEqual(
+            requests[1][2]["model"],
+            {"providerID": "test-provider", "modelID": "test-model"},
+        )
+        self.assertEqual(requests[1][2]["parts"][0]["type"], "text")
+        self.assertTrue(requests[1][2]["parts"][0]["text"].startswith("/example-skill\n\n"))
+        self.assertIn("Produce output.", requests[1][2]["parts"][0]["text"])
+        self.assertNotIn("Example Skill", requests[1][2]["parts"][0]["text"])
         self.assertEqual(requests[0][3]["directory"], str(Path(tmp).resolve()))
         self.assertIn("Example Skill", installed_skill_text)
 

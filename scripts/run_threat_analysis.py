@@ -174,6 +174,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         config.progress_enabled if args.print_progress is None else bool(args.print_progress)
     )
     progress = ProgressPrinter(enabled=progress_enabled)
+    skill_paths = default_skill_paths(args.project_root)
 
     runner = OpenCodeAgentRunner(
         base_url=args.opencode_base_url,
@@ -185,6 +186,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         password=password,
         agent=args.opencode_agent,
         delete_session=args.delete_session,
+        skill_paths=(
+            skill_paths.value_asset_map,
+            skill_paths.high_risk_module_map,
+            skill_paths.high_risk_module_merge,
+            skill_paths.attack_tree_by_asset,
+        ),
     )
 
     progress.emit(f"opencode server check started: base_url={args.opencode_base_url}")
@@ -199,7 +206,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             pipeline = ThreatAnalysisPipeline(
                 submitter=AgentSubmitter(scheduler),
                 layout=layout,
-                skill_paths=default_skill_paths(args.project_root),
+                skill_paths=skill_paths,
                 progress_reporter=progress,
             )
             result = pipeline.run(

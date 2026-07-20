@@ -107,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="启动 opencode serve 的命令字符串。",
     )
     parser.add_argument(
+        "--opencode-directory",
+        default=None,
+        help="opencode 运行的项目目录；未传时使用当前工作目录。",
+    )
+    parser.add_argument(
         "--no-start-opencode",
         action="store_true",
         help="不启动 opencode serve，只连接已有 server。",
@@ -173,6 +178,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     runner = OpenCodeAgentRunner(
         base_url=args.opencode_base_url,
         start_command=start_command,
+        cwd=args.opencode_directory,
         timeout=args.server_timeout,
         startup_timeout=args.startup_timeout,
         username=args.opencode_username,

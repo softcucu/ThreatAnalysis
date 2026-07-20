@@ -9,9 +9,10 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Mapping, Protocol
-from urllib import error, request
+from urllib import error, parse, request
 
 from agent_runtime.model_router import ModelConfig
+from agent_runtime.skills import install_opencode_skill, skill_name_from_path
 from agent_runtime.task import AgentResult, AgentTask, TaskStatus
 
 
@@ -125,13 +126,6 @@ class CommandAgentRunner:
                 + completed.stderr,
                 encoding="utf-8",
             )
-            raw_output = None
-            if completed.returncode == 0:
-                raw_output = _command_raw_output(
-                    output_path=output_path,
-                    raw_output_path=raw_output_path,
-                    stdout=completed.stdout,
-                )
             status = TaskStatus.SUCCEEDED if completed.returncode == 0 else TaskStatus.FAILED
             return AgentResult(
                 task_id=task.task_id,
@@ -144,7 +138,7 @@ class CommandAgentRunner:
                 started_at=started,
                 finished_at=time.time(),
                 returncode=completed.returncode,
-                raw_output=raw_output,
+                raw_output=None,
                 metadata=dict(task.metadata),
             )
         except Exception as exc:
@@ -192,6 +186,8 @@ class OpenCodeAgentRunner:
         password: str | None = None,
         agent: str | None = None,
         delete_session: bool = False,
+        install_skills: bool = True,
+        use_skill_command: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.start_command = None if start_command is None else tuple(start_command)
@@ -203,6 +199,8 @@ class OpenCodeAgentRunner:
         self.password = password
         self.agent = agent
         self.delete_session = delete_session
+        self.install_skills = install_skills
+        self.use_skill_command = use_skill_command
         self._process: subprocess.Popen[str] | None = None
         self._start_lock = threading.Lock()
 
@@ -261,29 +259,47 @@ class OpenCodeAgentRunner:
         prompt_file = output_path.with_suffix(output_path.suffix + ".prompt.txt")
         log_file = output_path.with_suffix(output_path.suffix + ".log")
         prompt_file.write_text(prompt, encoding="utf-8")
+        directory = self._directory()
+        skill_name = skill_name_from_path(task.skill_path)
 
         session_id: str | None = None
         try:
+            if self.install_skills:
+                install_opencode_skill(task.skill_path, directory)
             self.start()
             session = self._post_json(
                 "/session",
                 {"title": task.task_id},
+                query=self._opencode_query(directory),
             )
             session_id = _session_id(session)
             if not session_id:
                 raise RuntimeError(f"OpenCode did not return a session id: {session!r}")
 
-            message_payload = self._message_payload(prompt, model_config)
-            response = self._post_json(f"/session/{session_id}/message", message_payload)
+            if self.use_skill_command:
+                response = self._post_json(
+                    f"/session/{session_id}/command",
+                    self._command_payload(prompt, skill_name, model_config),
+                    query=self._opencode_query(directory),
+                )
+            else:
+                message_payload = self._message_payload(prompt, model_config)
+                response = self._post_json(
+                    f"/session/{session_id}/message",
+                    message_payload,
+                    query=self._opencode_query(directory),
+                )
             output_text = _extract_response_text(response)
             raw_output_path.write_text(output_text, encoding="utf-8")
             log_file.write_text(
                 json.dumps(
                     {
                         "base_url": self.base_url,
+                        "directory": str(directory),
                         "session_id": session_id,
                         "task_id": task.task_id,
                         "task_type": task.task_type,
+                        "skill": skill_name,
                         "model": model_config.model,
                         "response": response,
                     },
@@ -322,9 +338,38 @@ class OpenCodeAgentRunner:
         finally:
             if self.delete_session and session_id:
                 try:
-                    self._request_json("DELETE", f"/session/{session_id}")
+                    self._request_json(
+                        "DELETE",
+                        f"/session/{session_id}",
+                        query=self._opencode_query(directory),
+                    )
                 except Exception:
                     pass
+
+    def _directory(self) -> Path:
+        return Path(self.cwd).expanduser().resolve() if self.cwd else Path.cwd().resolve()
+
+    def _opencode_query(self, directory: Path) -> dict[str, str]:
+        return {"directory": str(directory)}
+
+    def _command_payload(
+        self,
+        prompt: str,
+        skill_name: str,
+        model_config: ModelConfig,
+    ) -> dict:
+        payload: dict = {
+            "command": skill_name,
+            "arguments": prompt,
+            "model": _opencode_model_string(model_config),
+        }
+        agent = model_config.parameters.get("agent") or self.agent
+        if agent:
+            payload["agent"] = str(agent)
+        variant = model_config.parameters.get("variant")
+        if variant:
+            payload["variant"] = str(variant)
+        return payload
 
     def _message_payload(self, prompt: str, model_config: ModelConfig) -> dict:
         payload: dict = {
@@ -347,18 +392,29 @@ class OpenCodeAgentRunner:
         except Exception:
             return False
 
-    def _post_json(self, path: str, payload: Mapping[str, object]) -> object:
-        return self._request_json("POST", path, payload)
+    def _post_json(
+        self,
+        path: str,
+        payload: Mapping[str, object],
+        *,
+        query: Mapping[str, str] | None = None,
+    ) -> object:
+        return self._request_json("POST", path, payload, query=query)
 
     def _request_json(
         self,
         method: str,
         path: str,
         payload: Mapping[str, object] | None = None,
+        *,
+        query: Mapping[str, str] | None = None,
     ) -> object:
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        url = self.base_url + path
+        if query:
+            url += "?" + parse.urlencode(query)
         req = request.Request(
-            self.base_url + path,
+            url,
             data=body,
             method=method,
             headers={"Accept": "application/json"},
@@ -427,6 +483,11 @@ def _opencode_model(model_config: ModelConfig) -> dict[str, str]:
     )
 
 
+def _opencode_model_string(model_config: ModelConfig) -> str:
+    model = _opencode_model(model_config)
+    return f"{model['providerID']}/{model['modelID']}"
+
+
 def _extract_response_text(response: object) -> str:
     text = _collect_text(response)
     if text.strip():
@@ -457,22 +518,3 @@ def _collect_text(value: object) -> str:
 
 def _raw_output_path(output_path: Path) -> Path:
     return output_path.with_suffix(output_path.suffix + ".raw.txt")
-
-
-def _command_raw_output(
-    *,
-    output_path: Path,
-    raw_output_path: Path,
-    stdout: str,
-) -> str | None:
-    if raw_output_path.exists():
-        return raw_output_path.read_text(encoding="utf-8")
-    if output_path.exists():
-        raw_output = output_path.read_text(encoding="utf-8")
-    elif stdout:
-        raw_output = stdout
-    else:
-        return None
-
-    raw_output_path.write_text(raw_output, encoding="utf-8")
-    return raw_output

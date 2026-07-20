@@ -1,5 +1,6 @@
 import io
 import json
+import sys
 import tempfile
 import threading
 import time
@@ -10,6 +11,7 @@ from agent_runtime import (
     AgentScheduler,
     AgentSubmitter,
     AgentTask,
+    CommandAgentRunner,
     FunctionAgentRunner,
     ModelRouter,
     OpenCodeAgentRunner,
@@ -21,7 +23,9 @@ from agent_runtime.errors import TaskValidationError
 from agent_runtime.config import load_runtime_config
 from agent_runtime.output_validation import parse_json_output, parse_json_output_for_schema
 from agent_runtime.preflight import validate_task
+from agent_runtime.prompt_builder import PromptBuilder
 from agent_runtime.queue import TaskQueue
+from agent_runtime.skills import install_opencode_skill
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -134,7 +138,13 @@ class AgentRuntimeTests(unittest.TestCase):
 
     def test_submitter_runs_task_and_writes_output(self):
         def run(task, model_config, prompt):
-            self.assertIn("Example Skill", prompt)
+            self.assertIn("Produce output.", prompt)
+            self.assertIn("调用 skill：`example-skill`", prompt)
+            self.assertIn("直接作为本次回复返回", prompt)
+            self.assertIn("不要创建、修改或写入任何结果文件", prompt)
+            self.assertNotIn("Example Skill", prompt)
+            self.assertNotIn("# Runtime Prompt", prompt)
+            self.assertNotIn("# Model", prompt)
             self.assertEqual(model_config.model, "test-model")
             return json.dumps({"task_id": task.task_id, "model": model_config.model})
 
@@ -178,6 +188,93 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("```", output_text)
         self.assertIn("```json", raw_text)
         self.assertIsNone(result.raw_output)
+
+    def test_command_runner_reads_json_output_not_stale_raw_file(self):
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import json, pathlib, sys; "
+                "pathlib.Path(sys.argv[1]).write_text("
+                "json.dumps(dict(task_id='task-1', model=sys.argv[2])), "
+                "encoding='utf-8')"
+            ),
+            "{output_path}",
+            "{model}",
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self.make_task(tmp)
+            Path(task.output_path + ".raw.txt").write_text("not json", encoding="utf-8")
+            scheduler = AgentScheduler(
+                runner=CommandAgentRunner(command),
+                model_router=router(),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(task).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(result.output, {"task_id": "task-1", "model": "test-model"})
+
+    def test_command_runner_fails_when_json_output_file_is_missing(self):
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import json, pathlib, sys; "
+                "pathlib.Path(sys.argv[1]).write_text("
+                "json.dumps(dict(task_id='task-1', model=sys.argv[2])), "
+                "encoding='utf-8')"
+            ),
+            "{raw_output_path}",
+            "{model}",
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=CommandAgentRunner(command),
+                model_router=router(),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertIn("Agent output file does not exist", result.error)
+
+    def test_prompt_builder_keeps_runtime_prompt_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = PromptBuilder().build(self.make_task(tmp), router().route("unit"))
+
+        self.assertIn("Produce output.", prompt)
+        self.assertIn("调用 skill：`example-skill`", prompt)
+        self.assertIn("输出 JSON Schema：", prompt)
+        self.assertIn(str(INPUT), prompt)
+        self.assertIn("直接作为本次回复返回", prompt)
+        self.assertIn("不要创建、修改或写入任何结果文件", prompt)
+        self.assertNotIn(str(Path(tmp) / "task-1.json"), prompt)
+        self.assertNotIn("写入输出文件", prompt)
+        self.assertNotIn("Example Skill", prompt)
+        self.assertNotIn("# Skill", prompt)
+        self.assertNotIn("# Runtime Prompt", prompt)
+        self.assertNotIn("# Model", prompt)
+        self.assertNotIn("resource", prompt)
+
+    def test_opencode_skill_install_copies_skill_directory_payloads(self):
+        with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as workspace:
+            source = Path(source_tmp) / "threat-skill"
+            references = source / "references"
+            references.mkdir(parents=True)
+            (source / "SKILL.md").write_text("# Threat Skill\n", encoding="utf-8")
+            (references / "catalog.json").write_text("[]", encoding="utf-8")
+
+            installed = install_opencode_skill(source, workspace)
+
+            self.assertEqual(
+                installed,
+                Path(workspace).resolve() / ".opencode" / "skills" / "threat-skill",
+            )
+            self.assertEqual((installed / "SKILL.md").read_text(encoding="utf-8"), "# Threat Skill\n")
+            self.assertEqual((installed / "references" / "catalog.json").read_text(), "[]")
 
     def test_progress_reporter_outputs_key_task_steps(self):
         def run(task, model_config, prompt):
@@ -235,18 +332,18 @@ class AgentRuntimeTests(unittest.TestCase):
             {"task_id": "task-1", "model": "test-model"},
         )
 
-    def test_opencode_runner_creates_session_and_sends_model(self):
+    def test_opencode_runner_creates_session_installs_skill_and_sends_model(self):
         requests = []
 
         class FakeOpenCodeRunner(OpenCodeAgentRunner):
             def start(self):
                 return None
 
-            def _request_json(self, method, path, payload=None):
-                requests.append((method, path, payload))
+            def _request_json(self, method, path, payload=None, *, query=None):
+                requests.append((method, path, payload, query))
                 if method == "POST" and path == "/session":
                     return {"id": "session-001", "title": payload.get("title")}
-                if method == "POST" and path == "/session/session-001/message":
+                if method == "POST" and path == "/session/session-001/command":
                     model = payload["model"]
                     return {
                         "parts": [
@@ -255,36 +352,40 @@ class AgentRuntimeTests(unittest.TestCase):
                                 "text": json.dumps(
                                     {
                                         "task_id": "task-1",
-                                        "model": f"{model['providerID']}/{model['modelID']}",
+                                        "model": model,
                                     }
                                 ),
                             }
                         ]
                     }
-                raise AssertionError((method, path, payload))
+                raise AssertionError((method, path, payload, query))
 
         with tempfile.TemporaryDirectory() as tmp:
             scheduler = AgentScheduler(
-                runner=FakeOpenCodeRunner(start_command=None),
+                runner=FakeOpenCodeRunner(start_command=None, cwd=tmp),
                 model_router=opencode_router(),
             )
             with scheduler:
                 result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+            installed_skill = Path(tmp) / ".opencode" / "skills" / "example-skill" / "SKILL.md"
+            installed_skill_text = installed_skill.read_text(encoding="utf-8")
 
         self.assertEqual(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(result.output["model"], "test-provider/test-model")
         self.assertEqual(requests[0][1], "/session")
-        self.assertEqual(requests[1][1], "/session/session-001/message")
-        self.assertEqual(
-            requests[1][2]["model"],
-            {"providerID": "test-provider", "modelID": "test-model"},
-        )
-        self.assertEqual(requests[1][2]["parts"][0]["type"], "text")
+        self.assertEqual(requests[1][1], "/session/session-001/command")
+        self.assertEqual(requests[1][2]["command"], "example-skill")
+        self.assertEqual(requests[1][2]["model"], "test-provider/test-model")
+        self.assertIn("Produce output.", requests[1][2]["arguments"])
+        self.assertNotIn("Example Skill", requests[1][2]["arguments"])
+        self.assertEqual(requests[0][3]["directory"], str(Path(tmp).resolve()))
+        self.assertIn("Example Skill", installed_skill_text)
 
-    def test_opencode_runner_supports_explicit_model_parameters(self):
+    def test_opencode_runner_supports_explicit_model_parameters_for_skill_command(self):
         runner = OpenCodeAgentRunner(start_command=None)
-        payload = runner._message_payload(
+        payload = runner._command_payload(
             "hello",
+            "example-skill",
             RuntimeConfig.from_dict(
                 {
                     "models": {
@@ -302,10 +403,7 @@ class AgentRuntimeTests(unittest.TestCase):
             ).models["unit"],
         )
 
-        self.assertEqual(
-            payload["model"],
-            {"providerID": "test-provider", "modelID": "test-model"},
-        )
+        self.assertEqual(payload["model"], "test-provider/test-model")
 
     def test_schema_validation_failure_returns_failed_result(self):
         def run(task, model_config, prompt):

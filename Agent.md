@@ -90,7 +90,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ## 重要约定
 
 - Agent 任务输出必须是可解析 JSON，并通过 `src/threat_analysis_harness/schemas.py` 中对应 schema 校验。
-- prompt 不要求 Agent 写输出文件。运行时会从最终回复文本中提取 JSON，再写入规范化 `output_path`。
+- prompt 要求 Agent 不允许输出json文件，直接返回json结果。运行时会从最终回复文本中提取 JSON，再写入规范化 `output_path`。
+- 如果 OpenCode 任务在任意 attempt 中因 JSON 解析或 schema 校验失败，scheduler 会在该 attempt 的 session 里追问“不要写文件，按照正确的JSON Schema直接输出”，再校验追问结果；如果追问结果仍不合法，再进入原有重试流程。
 - `task_type` 必须能在 `agent-runtime.json` 的 `models` 中找到模型配置。
 - 模型并发主要由 `model_resources` 控制；`concurrency.global` 是 scheduler worker 数。
 - opencode runner 会把配置的 skills 安装到 opencode 工作目录的 `.opencode/skills/`，并更新该目录的 `opencode.json`。
@@ -113,4 +114,3 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - JSON 写入保持 `ensure_ascii=False` 和缩进格式，避免破坏中文产物可读性。
 - 保持错误信息可定位，尤其是输出校验、schema 校验和 artifact 一致性错误。
 - 控制改动范围，不做与当前任务无关的重构或格式化。
-

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agent_runtime import AgentSubmitter, AgentTask
+from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.schemas import HIGH_RISK_MODULES_SCHEMA
@@ -156,7 +157,8 @@ class HighRiskModuleStage:
 def _map_prompt(input_files: Sequence[str | Path]) -> str:
     return (
         "请根据 skill 要求分析输入文件和代码仓内容，识别高风险模块。"
-        "最终只输出符合 JSON schema 的数组。输入文件："
+        "最终只输出符合 JSON schema 的数组。"
+        f"{JSON_RESULT_INSTRUCTION}输入文件："
         + ", ".join(str(path) for path in input_files)
     )
 
@@ -173,7 +175,8 @@ def _category_map_prompt(
         f"输出项的“{category_field}”必须全部为“是”。"
         "其他“是否涉及”字段仍需结合代码证据真实填写，不得为了当前分类强行填写“是”；"
         "“是否外部暴露面”也必须按代码中的外部接口、外部输入或暴露路径证据真实判断。"
-        "最终只输出符合 JSON schema 的数组。输入文件："
+        "最终只输出符合 JSON schema 的数组。"
+        f"{JSON_RESULT_INSTRUCTION}输入文件："
         + ", ".join(str(path) for path in input_files)
     )
 
@@ -182,6 +185,7 @@ def _merge_prompt(candidate_files: Sequence[str | Path]) -> str:
     return (
         "请根据 skill 要求合并多个按高风险特征拆分识别的高风险模块候选 JSON，"
         "处理命名不一致、功能重叠和同一模块命中多个高风险特征的情况，"
-        "最终只输出符合 JSON schema 的最终高风险模块数组。候选文件："
+        "最终只输出符合 JSON schema 的最终高风险模块数组。"
+        f"{JSON_RESULT_INSTRUCTION}候选文件："
         + ", ".join(str(path) for path in candidate_files)
     )

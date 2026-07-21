@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from unittest import mock
 from pathlib import Path
 
@@ -24,8 +25,9 @@ from agent_runtime.errors import TaskValidationError
 from agent_runtime.config import load_runtime_config
 from agent_runtime.output_validation import parse_json_output, parse_json_output_for_schema
 from agent_runtime.preflight import validate_task
-from agent_runtime.prompt_builder import PromptBuilder
+from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION, PromptBuilder
 from agent_runtime.queue import TaskQueue
+from agent_runtime.runner import JSON_OUTPUT_REPAIR_PROMPT
 from agent_runtime.skills import install_opencode_skill
 
 
@@ -140,7 +142,7 @@ class AgentRuntimeTests(unittest.TestCase):
 
     def test_submitter_runs_task_and_writes_output(self):
         def run(task, model_config, prompt):
-            self.assertEqual(prompt, "Produce output.")
+            self.assertEqual(prompt, f"Produce output.\n{JSON_RESULT_INSTRUCTION}")
             self.assertNotIn("调用 skill：`example-skill`", prompt)
             self.assertNotIn("输出 JSON Schema：", prompt)
             self.assertNotIn("输入文件：", prompt)
@@ -247,7 +249,7 @@ class AgentRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             prompt = PromptBuilder().build(self.make_task(tmp), router().route("unit"))
 
-        self.assertEqual(prompt, "Produce output.")
+        self.assertEqual(prompt, f"Produce output.\n{JSON_RESULT_INSTRUCTION}")
         self.assertNotIn("调用 skill：`example-skill`", prompt)
         self.assertNotIn("输出 JSON Schema：", prompt)
         self.assertNotIn("输入文件：", prompt)
@@ -259,6 +261,16 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("# Runtime Prompt", prompt)
         self.assertNotIn("# Model", prompt)
         self.assertNotIn("resource", prompt)
+
+    def test_prompt_builder_does_not_duplicate_json_result_instruction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = replace(
+                self.make_task(tmp),
+                runtime_prompt=f"Produce output.\n{JSON_RESULT_INSTRUCTION}",
+            )
+            prompt = PromptBuilder().build(task, router().route("unit"))
+
+        self.assertEqual(prompt, f"Produce output.\n{JSON_RESULT_INSTRUCTION}")
 
     def test_opencode_skill_install_copies_skill_directory_payloads(self):
         with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as workspace:
@@ -629,10 +641,93 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(requests[2][2]["parts"][0]["type"], "text")
         self.assertTrue(requests[2][2]["parts"][0]["text"].startswith("/example-skill\n\n"))
         self.assertIn("Produce output.", requests[2][2]["parts"][0]["text"])
+        self.assertIn(JSON_RESULT_INSTRUCTION, requests[2][2]["parts"][0]["text"])
         self.assertNotIn("Example Skill", requests[2][2]["parts"][0]["text"])
         self.assertIn('"task_id": "task-1"', raw_text)
         self.assertEqual(requests[1][3]["directory"], str(Path(tmp).resolve()))
         self.assertIn("Example Skill", installed_skill_text)
+
+    def test_opencode_runner_repairs_each_output_validation_failure_attempt(self):
+        requests = []
+        sessions = []
+        messages = []
+
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def start(self):
+                return None
+
+            def _request_json(self, method, path, payload=None, *, query=None):
+                requests.append((method, path, payload, query))
+                if method == "GET" and path == "/skill":
+                    return [{"name": "example-skill", "location": "test", "content": ""}]
+                if method == "POST" and path == "/session":
+                    session_id = f"session-{len(sessions) + 1:03d}"
+                    sessions.append(session_id)
+                    return {"id": session_id, "title": payload.get("title")}
+                if method == "POST" and path.endswith("/message"):
+                    session_id = path.split("/")[2]
+                    text = payload["parts"][0]["text"]
+                    messages.append((session_id, text))
+                    if text == JSON_OUTPUT_REPAIR_PROMPT:
+                        repair_text = (
+                            json.dumps(
+                                {
+                                    "task_id": "task-1",
+                                    "model": "test-provider/test-model",
+                                }
+                            )
+                            if session_id == "session-002"
+                            else "still not json"
+                        )
+                        return {
+                            "info": {
+                                "id": "assistant-repair",
+                                "role": "assistant",
+                                "sessionID": session_id,
+                            },
+                            "parts": [{"type": "text", "text": repair_text}],
+                        }
+                    return {
+                        "info": {
+                            "id": "assistant-invalid",
+                            "role": "assistant",
+                            "sessionID": session_id,
+                        },
+                        "parts": [{"type": "text", "text": "not json"}],
+                    }
+                if method == "GET" and path.endswith("/message"):
+                    session_id = path.split("/")[2]
+                    return [
+                        {
+                            "info": {
+                                "id": "assistant-invalid",
+                                "role": "assistant",
+                                "sessionID": session_id,
+                            },
+                            "parts": [{"type": "text", "text": "not json"}],
+                        }
+                    ]
+                raise AssertionError((method, path, payload, query))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FakeOpenCodeRunner(start_command=None, cwd=tmp),
+                model_router=opencode_router(),
+                max_retries=1,
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+            raw_text = Path(result.output_path + ".raw.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(result.output["model"], "test-provider/test-model")
+        self.assertEqual(sessions, ["session-001", "session-002"])
+        self.assertEqual(messages[1], ("session-001", JSON_OUTPUT_REPAIR_PROMPT))
+        self.assertEqual(messages[-1], ("session-002", JSON_OUTPUT_REPAIR_PROMPT))
+        self.assertEqual(result.metadata["runtime_retry"]["attempt"], 2)
+        self.assertTrue(result.metadata["opencode"]["repair_attempted"])
+        self.assertIn('"task_id": "task-1"', raw_text)
+        self.assertNotIn("not json", raw_text)
 
     def test_opencode_runner_fetches_public_messages_when_prompt_response_is_not_assistant(self):
         requests = []

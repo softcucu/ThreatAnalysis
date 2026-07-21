@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agent_runtime import AgentSubmitter, AgentTask
+from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.errors import ArtifactConsistencyError
@@ -156,6 +157,7 @@ def _asset_prompt(
         "high_risk_modules 是全部最终高风险模块列表；必须读取该文件中的高风险模块后再分析攻击路径。"
         f"{context_text}"
         "最终只输出符合 JSON schema 的对象。"
+        f"{JSON_RESULT_INSTRUCTION}"
     )
 
 

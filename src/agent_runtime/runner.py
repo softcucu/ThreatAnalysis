@@ -17,6 +17,9 @@ from agent_runtime.skills import install_opencode_skill, skill_name_from_path
 from agent_runtime.task import AgentResult, AgentTask, TaskStatus
 
 
+JSON_OUTPUT_REPAIR_PROMPT = "不要写文件，按照正确的JSON Schema直接输出"
+
+
 class AgentRunner(Protocol):
     def run(self, task: AgentTask, model_config: ModelConfig, prompt: str) -> AgentResult:
         """Run one task and return its terminal result."""
@@ -340,7 +343,12 @@ class OpenCodeAgentRunner:
                 finished_at=time.time(),
                 returncode=0,
                 raw_output=output_text,
-                metadata=dict(task.metadata),
+                metadata=_opencode_result_metadata(
+                    task.metadata,
+                    session_id=session_id,
+                    directory=directory,
+                    skill=skill_name,
+                ),
             )
         except Exception as exc:
             log_file.write_text(str(exc), encoding="utf-8")
@@ -354,7 +362,16 @@ class OpenCodeAgentRunner:
                 error=str(exc),
                 started_at=started,
                 finished_at=time.time(),
-                metadata=dict(task.metadata),
+                metadata=(
+                    _opencode_result_metadata(
+                        task.metadata,
+                        session_id=session_id,
+                        directory=directory,
+                        skill=skill_name,
+                    )
+                    if session_id
+                    else dict(task.metadata)
+                ),
             )
         finally:
             if self.delete_session and session_id:
@@ -366,6 +383,94 @@ class OpenCodeAgentRunner:
                     )
                 except Exception:
                     pass
+
+    def repair_output_after_validation_failure(
+        self,
+        task: AgentTask,
+        model_config: ModelConfig,
+        result: AgentResult,
+        validation_error: str,
+    ) -> AgentResult:
+        metadata = dict(result.metadata)
+        opencode_metadata = metadata.get("opencode")
+        if not isinstance(opencode_metadata, Mapping):
+            return result.with_status(
+                TaskStatus.FAILED,
+                error=f"{validation_error}; OpenCode output repair skipped: missing session id",
+                finished_at=time.time(),
+            )
+
+        session_id = opencode_metadata.get("session_id")
+        if not session_id:
+            return result.with_status(
+                TaskStatus.FAILED,
+                error=f"{validation_error}; OpenCode output repair skipped: missing session id",
+                finished_at=time.time(),
+            )
+
+        directory_value = opencode_metadata.get("directory")
+        directory = (
+            Path(str(directory_value)).expanduser().resolve()
+            if directory_value
+            else self._directory()
+        )
+        output_path = Path(task.output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_output_path = _raw_output_path(output_path)
+        log_file = Path(result.log_path) if result.log_path else output_path.with_suffix(
+            output_path.suffix + ".log"
+        )
+
+        try:
+            self.start()
+            response = self._post_json(
+                f"/session/{session_id}/message",
+                self._message_payload(JSON_OUTPUT_REPAIR_PROMPT, model_config),
+                query=self._opencode_query(directory),
+            )
+            output_text = self._latest_assistant_output_text(response, str(session_id), directory)
+            if not output_text.strip():
+                raise RuntimeError(
+                    f"OpenCode repair completed without assistant text response: {session_id}"
+                )
+            raw_output_path.write_text(output_text, encoding="utf-8")
+            log_file.write_text(
+                json.dumps(
+                    {
+                        "base_url": self.base_url,
+                        "directory": str(directory),
+                        "session_id": str(session_id),
+                        "task_id": task.task_id,
+                        "task_type": task.task_type,
+                        "model": model_config.model,
+                        "repair_prompt": JSON_OUTPUT_REPAIR_PROMPT,
+                        "validation_error": validation_error,
+                        "repair_response": response,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            metadata["opencode"] = {
+                **dict(opencode_metadata),
+                "repair_prompt": JSON_OUTPUT_REPAIR_PROMPT,
+                "repair_attempted": True,
+            }
+            return result.with_status(
+                TaskStatus.SUCCEEDED,
+                error=None,
+                raw_output=output_text,
+                log_path=str(log_file),
+                finished_at=time.time(),
+                metadata=metadata,
+            )
+        except Exception as exc:
+            return result.with_status(
+                TaskStatus.FAILED,
+                error=f"{validation_error}; OpenCode output repair failed: {exc}",
+                finished_at=time.time(),
+            )
 
     def _directory(self) -> Path:
         return Path(self.cwd).expanduser().resolve() if self.cwd else Path.cwd().resolve()
@@ -444,6 +549,26 @@ class OpenCodeAgentRunner:
 
         messages_text = _assistant_messages_text(messages)
         return messages_text or direct_text
+
+    def _latest_assistant_output_text(
+        self,
+        response: object,
+        session_id: str,
+        directory: Path,
+    ) -> str:
+        direct_text = _assistant_response_text(response)
+        if direct_text.strip():
+            return direct_text
+        try:
+            messages = self._request_json(
+                "GET",
+                f"/session/{session_id}/message",
+                query={**self._opencode_query(directory), "limit": "100"},
+            )
+        except RuntimeError:
+            return direct_text
+
+        return _latest_assistant_message_text(messages) or direct_text
 
     def _verify_skill_available(self, skill_name: str, directory: Path) -> None:
         try:
@@ -639,6 +764,22 @@ def _skill_invocation_prompt(skill_name: str, prompt: str) -> str:
     return f"/{skill_name}\n\n{prompt}"
 
 
+def _opencode_result_metadata(
+    metadata: Mapping[str, object],
+    *,
+    session_id: str,
+    directory: Path,
+    skill: str,
+) -> dict[str, object]:
+    result = dict(metadata)
+    result["opencode"] = {
+        "session_id": session_id,
+        "directory": str(directory),
+        "skill": skill,
+    }
+    return result
+
+
 def _is_opencode_http_404(exc: RuntimeError) -> bool:
     return "OpenCode HTTP 404 " in str(exc)
 
@@ -670,6 +811,18 @@ def _assistant_messages_text(messages: object) -> str:
         if text:
             texts.append(text)
     return "\n".join(texts).strip()
+
+
+def _latest_assistant_message_text(messages: object) -> str:
+    items = _message_items(messages)
+    if items is None:
+        return _assistant_response_text(messages).strip()
+
+    for item in reversed(items):
+        text = _assistant_response_text(item).strip()
+        if text:
+            return text
+    return ""
 
 
 def _assistant_response_text(response: object) -> str:

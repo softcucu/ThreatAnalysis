@@ -6,7 +6,7 @@ import threading
 import time
 from collections import defaultdict
 
-from agent_runtime.errors import SchedulerStateError
+from agent_runtime.errors import OutputValidationError, SchedulerStateError
 from agent_runtime.model_router import ModelConfig, ModelRouter
 from agent_runtime.output_validation import parse_validate_and_write_output
 from agent_runtime.preflight import validate_task
@@ -193,7 +193,11 @@ class AgentScheduler:
             try:
                 if prompt is None:
                     prompt = self.prompt_builder.build(task, model_config)
-                result = self._run_task_attempt(task, model_config, prompt)
+                result = self._run_task_attempt(
+                    task,
+                    model_config,
+                    prompt,
+                )
             except Exception as exc:
                 result = AgentResult(
                     task_id=task.task_id,
@@ -240,6 +244,38 @@ class AgentScheduler:
 
             try:
                 output = parse_validate_and_write_output(task, raw=result.raw_output)
+            except OutputValidationError as exc:
+                repaired = self._repair_output_after_validation_failure(
+                    task,
+                    model_config,
+                    result,
+                    exc,
+                )
+                if repaired is not None:
+                    if repaired.status != TaskStatus.SUCCEEDED:
+                        return repaired
+                    try:
+                        output = parse_validate_and_write_output(
+                            task,
+                            raw=repaired.raw_output,
+                        )
+                    except Exception as repair_exc:
+                        return repaired.with_status(
+                            TaskStatus.FAILED,
+                            error=str(repair_exc),
+                            finished_at=time.time(),
+                        )
+                    return repaired.with_status(
+                        TaskStatus.SUCCEEDED,
+                        output=output,
+                        raw_output=None,
+                    )
+
+                return result.with_status(
+                    TaskStatus.FAILED,
+                    error=str(exc),
+                    finished_at=time.time(),
+                )
             except Exception as exc:
                 return result.with_status(
                     TaskStatus.FAILED,
@@ -263,6 +299,25 @@ class AgentScheduler:
                 started_at=started_at,
                 finished_at=time.time(),
                 metadata=dict(task.metadata),
+            )
+
+    def _repair_output_after_validation_failure(
+        self,
+        task: AgentTask,
+        model_config: ModelConfig,
+        result: AgentResult,
+        error: OutputValidationError,
+    ) -> AgentResult | None:
+        repair = getattr(self.runner, "repair_output_after_validation_failure", None)
+        if not callable(repair):
+            return None
+        try:
+            return repair(task, model_config, result, str(error))
+        except Exception as exc:
+            return result.with_status(
+                TaskStatus.FAILED,
+                error=f"{error}; output repair failed: {exc}",
+                finished_at=time.time(),
             )
 
     def _progress(self, message: str) -> None:

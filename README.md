@@ -22,7 +22,7 @@
 - 硬件资产
 - 服务资产
 
-每个任务的 runtime prompt 只允许识别当前类别，例如“当前只识别数据类价值资产”。任务输出必须符合价值资产 JSON schema。
+每个任务的 runtime prompt 只允许识别当前类别，例如“当前只识别数据类价值资产”，并要求“不允许输出json文件，直接返回json结果”。任务输出必须符合价值资产 JSON schema。
 
 四类任务完成后，程序会合并结果：
 
@@ -214,7 +214,7 @@ cp agent-runtime.example.json agent-runtime.json
 - `retry.max_retries` 是任务失败后的最大重试次数，未配置时默认 3 次；设置为 `0` 可关闭重试。
 - `progress.enabled` 是全局进度打印开关。开启后会向 stderr 输出 opencode 连接检查、pipeline 阶段、任务排队、任务开始、任务完成和失败信息；关闭后只保留最终 JSON 输出。
 
-opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架中的 `OpenCodeAgentRunner` 会在启动或连接 server 前，把配置的所有 skills 同步到 opencode 项目目录的 `.opencode/skills/<skill-name>/`，并在该目录的 `opencode.json` 中配置 `skills.paths` 指向同一个 `.opencode/skills` 目录；每个 `AgentTask` 会创建独立 opencode session，并通过 `/session/{id}/message` 发送 `/<skill-name>` 开头的提示词调用该 skill。运行时 prompt 只包含当前任务说明、输入文件和 JSON schema，不内联 skill 正文、模型配置或输出路径；prompt 会要求模型直接返回 JSON 文本，不要写结果文件。
+opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架中的 `OpenCodeAgentRunner` 会在启动或连接 server 前，把配置的所有 skills 同步到 opencode 项目目录的 `.opencode/skills/<skill-name>/`，并在该目录的 `opencode.json` 中配置 `skills.paths` 指向同一个 `.opencode/skills` 目录；每个 `AgentTask` 会创建独立 opencode session，并通过 `/session/{id}/message` 发送 `/<skill-name>` 开头的提示词调用该 skill。运行时 prompt 只包含当前任务说明、输入文件和 JSON schema，不内联 skill 正文、模型配置或输出路径；prompt 会要求模型“不允许输出json文件，直接返回json结果”。每次 OpenCode 输出因 JSON 解析或 JSON schema 校验失败时，scheduler 会在该次 attempt 的 session 中继续追问“不要写文件，按照正确的JSON Schema直接输出”，并再次校验追问返回的 JSON；如果追问结果仍不合法，再进入原有重试流程。
 
 ## 命令行启动
 

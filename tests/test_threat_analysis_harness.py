@@ -12,6 +12,7 @@ from agent_runtime import (
     ProgressPrinter,
     RuntimeConfig,
 )
+from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline
 from threat_analysis_harness.skills import default_skill_paths
 
@@ -168,6 +169,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
         high_risk_categories_seen = []
 
         def run(task, model_config, prompt):
+            self.assertIn(JSON_RESULT_INSTRUCTION, prompt)
             if task.task_type == "value_asset_map":
                 category = task.metadata.get("asset_category")
                 value_asset_categories_seen.append(category)

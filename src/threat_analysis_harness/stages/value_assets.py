@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agent_runtime import AgentSubmitter, AgentTask
+from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.schemas import VALUE_ASSETS_SCHEMA
@@ -137,7 +138,8 @@ def _category_prompt(
         "请根据 skill 要求分析输入文件和代码仓内容，识别价值资产。"
         f"当前只识别{category_label}类价值资产，输出项的“资产类别”必须全部为“{asset_category}”；"
         f"不得输出{_format_categories(other_categories)}。"
-        "最终只输出符合 JSON schema 的数组。输入文件："
+        "最终只输出符合 JSON schema 的数组。"
+        f"{JSON_RESULT_INSTRUCTION}输入文件："
         + ", ".join(str(path) for path in input_files)
     )
 
@@ -145,7 +147,8 @@ def _category_prompt(
 def _default_prompt(input_files: Sequence[str | Path]) -> str:
     return (
         "请根据 skill 要求分析输入文件和代码仓内容，识别价值资产。"
-        "最终只输出符合 JSON schema 的数组。输入文件："
+        "最终只输出符合 JSON schema 的数组。"
+        f"{JSON_RESULT_INSTRUCTION}输入文件："
         + ", ".join(str(path) for path in input_files)
     )
 

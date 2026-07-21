@@ -582,6 +582,27 @@ class AgentRuntimeTests(unittest.TestCase):
                             },
                         ],
                     }
+                if method == "GET" and path == "/session/session-001/message":
+                    return [
+                        {
+                            "info": {
+                                "id": "assistant-1",
+                                "role": "assistant",
+                                "sessionID": "session-001",
+                            },
+                            "parts": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        {
+                                            "task_id": "task-1",
+                                            "model": "test-provider/test-model",
+                                        }
+                                    ),
+                                },
+                            ],
+                        }
+                    ]
                 raise AssertionError((method, path, payload, query))
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -669,7 +690,76 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, TaskStatus.SUCCEEDED)
         self.assertEqual(result.output["model"], "test-provider/test-model")
         self.assertEqual(requests[3][1], "/session/session-001/message")
-        self.assertEqual(requests[3][3]["limit"], "20")
+        self.assertEqual(requests[3][3]["limit"], "100")
+
+    def test_opencode_runner_raw_output_collects_all_assistant_messages_for_schema_parser(self):
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def start(self):
+                return None
+
+            def _request_json(self, method, path, payload=None, *, query=None):
+                if method == "GET" and path == "/skill":
+                    return [{"name": "example-skill", "location": "test", "content": ""}]
+                if method == "POST" and path == "/session":
+                    return {"id": "session-001", "title": payload.get("title")}
+                if method == "POST" and path == "/session/session-001/message":
+                    return {
+                        "info": {"id": "user-1", "role": "user", "sessionID": "session-001"},
+                        "parts": [{"type": "text", "text": "Produce output."}],
+                    }
+                if method == "GET" and path == "/session/session-001/message":
+                    return [
+                        {
+                            "info": {
+                                "id": "assistant-1",
+                                "role": "assistant",
+                                "sessionID": "session-001",
+                            },
+                            "parts": [{"type": "text", "text": "先完成分析。"}],
+                        },
+                        {
+                            "info": {
+                                "id": "assistant-2",
+                                "role": "assistant",
+                                "sessionID": "session-001",
+                            },
+                            "parts": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        {
+                                            "task_id": "task-1",
+                                            "model": "test-provider/test-model",
+                                        }
+                                    ),
+                                }
+                            ],
+                        },
+                        {
+                            "info": {
+                                "id": "assistant-3",
+                                "role": "assistant",
+                                "sessionID": "session-001",
+                            },
+                            "parts": [{"type": "text", "text": "总结：任务完成。"}],
+                        },
+                    ]
+                raise AssertionError((method, path, payload, query))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FakeOpenCodeRunner(start_command=None, cwd=tmp),
+                model_router=opencode_router(),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+            raw_text = Path(result.output_path + ".raw.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(result.output["task_id"], "task-1")
+        self.assertIn("先完成分析。", raw_text)
+        self.assertIn('"task_id": "task-1"', raw_text)
+        self.assertIn("总结：任务完成。", raw_text)
 
     def test_opencode_runner_raw_output_uses_only_assistant_text_parts(self):
         class FakeOpenCodeRunner(OpenCodeAgentRunner):
@@ -709,6 +799,36 @@ class AgentRuntimeTests(unittest.TestCase):
                             },
                         ],
                     }
+                if method == "GET" and path == "/session/session-001/message":
+                    return [
+                        {
+                            "info": {
+                                "id": "assistant-1",
+                                "role": "assistant",
+                                "sessionID": "session-001",
+                            },
+                            "parts": [
+                                {
+                                    "type": "tool",
+                                    "tool": "read",
+                                    "content": [
+                                        {"type": "text", "text": '{"task_id": "wrong"}'},
+                                    ],
+                                    "state": {"output": "hidden tool output"},
+                                },
+                                {"type": "reasoning", "text": "hidden reasoning"},
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        {
+                                            "task_id": "task-1",
+                                            "model": "test-provider/test-model",
+                                        }
+                                    ),
+                                },
+                            ],
+                        }
+                    ]
                 raise AssertionError((method, path, payload, query))
 
         with tempfile.TemporaryDirectory() as tmp:

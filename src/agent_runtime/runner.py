@@ -306,12 +306,11 @@ class OpenCodeAgentRunner:
                     message_payload,
                     query=self._opencode_query(directory),
                 )
-            response = self._assistant_response_or_latest(response, session_id, directory)
-            if response is None:
+            output_text = self._assistant_output_text(response, session_id, directory)
+            if not output_text.strip():
                 raise RuntimeError(
                     f"OpenCode session completed without assistant text response: {session_id}"
                 )
-            output_text = _extract_response_text(response)
             raw_output_path.write_text(output_text, encoding="utf-8")
             log_file.write_text(
                 json.dumps(
@@ -427,24 +426,24 @@ class OpenCodeAgentRunner:
             payload["tools"] = model_config.parameters["tools"]
         return payload
 
-    def _assistant_response_or_latest(
+    def _assistant_output_text(
         self,
         response: object,
         session_id: str,
         directory: Path,
-    ) -> object | None:
-        if _assistant_response_text(response).strip():
-            return response
+    ) -> str:
+        direct_text = _assistant_response_text(response)
+        try:
+            messages = self._request_json(
+                "GET",
+                f"/session/{session_id}/message",
+                query={**self._opencode_query(directory), "limit": "100"},
+            )
+        except RuntimeError:
+            return direct_text
 
-        messages = self._request_json(
-            "GET",
-            f"/session/{session_id}/message",
-            query={**self._opencode_query(directory), "limit": "20"},
-        )
-        message = _latest_assistant_message(messages)
-        if message is None:
-            return None
-        return message
+        messages_text = _assistant_messages_text(messages)
+        return messages_text or direct_text
 
     def _verify_skill_available(self, skill_name: str, directory: Path) -> None:
         try:
@@ -659,21 +658,18 @@ def _skill_names(skills: object) -> set[str] | None:
     return names
 
 
-def _latest_assistant_message(messages: object) -> object | None:
-    if isinstance(messages, Mapping):
-        items = messages.get("items")
-    else:
-        items = messages
-    if not isinstance(items, list):
-        return None
+def _assistant_messages_text(messages: object) -> str:
+    texts: list[str] = []
+    items = _message_items(messages)
+    if items is None:
+        text = _assistant_response_text(messages)
+        return text.strip()
 
-    for item in reversed(items):
-        if not isinstance(item, Mapping) or _message_role(item) != "assistant":
-            continue
-        text = _assistant_response_text(item)
-        if text.strip():
-            return item
-    return None
+    for item in items:
+        text = _assistant_response_text(item).strip()
+        if text:
+            texts.append(text)
+    return "\n".join(texts).strip()
 
 
 def _assistant_response_text(response: object) -> str:
@@ -696,6 +692,14 @@ def _message_role(message: Mapping[str, object]) -> str | None:
         if isinstance(role, str):
             return role
     return None
+
+
+def _message_items(messages: object) -> list[object] | None:
+    if isinstance(messages, Mapping):
+        items = messages.get("items")
+    else:
+        items = messages
+    return items if isinstance(items, list) else None
 
 
 def _extract_response_text(response: object) -> str:

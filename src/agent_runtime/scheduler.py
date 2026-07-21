@@ -27,11 +27,17 @@ class AgentScheduler:
         prompt_builder: PromptBuilder | None = None,
         result_store: ResultStore | None = None,
         progress_reporter: ProgressReporter | None = None,
+        max_retries: int | None = None,
     ) -> None:
         self.runner = runner
         self.model_router = model_router
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.result_store = result_store or ResultStore()
+        self.max_retries = (
+            self.model_router.retry_max_retries if max_retries is None else int(max_retries)
+        )
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
         self.progress_reporter = progress_reporter
         if self.progress_reporter is None and self.model_router.progress_enabled:
             self.progress_reporter = ProgressPrinter(enabled=True)
@@ -143,43 +149,121 @@ class AgentScheduler:
                 self._active_by_type.pop(task.task_type, None)
 
     def _run_task(self, task: AgentTask) -> None:
-        started_at = time.time()
-        model: str | None = None
+        task_started_at = time.time()
         try:
             model_config = self._selected_models.get(task.task_id) or self.model_router.route(
                 task.task_type
             )
-            model = model_config.model
-            self.result_store.mark_running(task, started_at=started_at, model=model_config.model)
-            self._progress(
-                f"task started: task_id={task.task_id} task_type={task.task_type} "
-                f"model={model_config.model}"
-            )
-            prompt = self.prompt_builder.build(task, model_config)
-            result = self.runner.run(task, model_config, prompt)
-            if result.status == TaskStatus.SUCCEEDED:
-                output = parse_validate_and_write_output(task, raw=result.raw_output)
-                result = result.with_status(
-                    TaskStatus.SUCCEEDED,
-                    output=output,
-                    raw_output=None,
-                )
-            self.result_store.update(result)
-            self._progress_result(result, fallback_started_at=started_at)
         except Exception as exc:
             result = AgentResult(
                 task_id=task.task_id,
                 task_type=task.task_type,
                 status=TaskStatus.FAILED,
                 output_path=task.output_path,
-                model=model,
+                error=str(exc),
+                started_at=task_started_at,
+                finished_at=time.time(),
+                metadata=dict(task.metadata),
+            )
+            self.result_store.update(
+                _with_runtime_retry_metadata(
+                    result,
+                    attempt=1,
+                    max_retries=self.max_retries,
+                    started_at=task_started_at,
+                )
+            )
+            self._progress_result(result, fallback_started_at=task_started_at)
+            return
+
+        max_attempts = self.max_retries + 1
+        prompt: str | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            self.result_store.mark_running(
+                task,
+                started_at=task_started_at,
+                model=model_config.model,
+            )
+            self._progress(
+                f"task started: task_id={task.task_id} task_type={task.task_type} "
+                f"model={model_config.model} attempt={attempt}/{max_attempts}"
+            )
+
+            try:
+                if prompt is None:
+                    prompt = self.prompt_builder.build(task, model_config)
+                result = self._run_task_attempt(task, model_config, prompt)
+            except Exception as exc:
+                result = AgentResult(
+                    task_id=task.task_id,
+                    task_type=task.task_type,
+                    status=TaskStatus.FAILED,
+                    output_path=task.output_path,
+                    model=model_config.model,
+                    error=str(exc),
+                    started_at=task_started_at,
+                    finished_at=time.time(),
+                    metadata=dict(task.metadata),
+                )
+            result = _with_runtime_retry_metadata(
+                result,
+                attempt=attempt,
+                max_retries=self.max_retries,
+                started_at=task_started_at,
+            )
+            if result.status != TaskStatus.FAILED or attempt >= max_attempts:
+                self.result_store.update(result)
+                self._progress_result(result, fallback_started_at=task_started_at)
+                return
+
+            self.result_store.update(
+                result.with_status(
+                    TaskStatus.RUNNING,
+                    started_at=task_started_at,
+                    finished_at=None,
+                )
+            )
+            self._progress_retry(result, attempt=attempt, max_attempts=max_attempts)
+
+    def _run_task_attempt(
+        self,
+        task: AgentTask,
+        model_config: ModelConfig,
+        prompt: str,
+    ) -> AgentResult:
+        started_at = time.time()
+        try:
+            result = self.runner.run(task, model_config, prompt)
+            if result.status != TaskStatus.SUCCEEDED:
+                return result
+
+            try:
+                output = parse_validate_and_write_output(task, raw=result.raw_output)
+            except Exception as exc:
+                return result.with_status(
+                    TaskStatus.FAILED,
+                    error=str(exc),
+                    finished_at=time.time(),
+                )
+
+            return result.with_status(
+                TaskStatus.SUCCEEDED,
+                output=output,
+                raw_output=None,
+            )
+        except Exception as exc:
+            return AgentResult(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                status=TaskStatus.FAILED,
+                output_path=task.output_path,
+                model=model_config.model,
                 error=str(exc),
                 started_at=started_at,
                 finished_at=time.time(),
                 metadata=dict(task.metadata),
             )
-            self.result_store.update(result)
-            self._progress_result(result, fallback_started_at=started_at)
 
     def _progress(self, message: str) -> None:
         if self.progress_reporter is not None:
@@ -203,6 +287,21 @@ class AgentScheduler:
             f"model={result.model or '-'} duration={duration} error={detail}{log_suffix}"
         )
 
+    def _progress_retry(
+        self,
+        result: AgentResult,
+        *,
+        attempt: int,
+        max_attempts: int,
+    ) -> None:
+        detail = _short_error(result.error)
+        log_suffix = "" if not result.log_path else f" log={result.log_path}"
+        self._progress(
+            f"task retrying: task_id={result.task_id} task_type={result.task_type} "
+            f"model={result.model or '-'} attempt={attempt}/{max_attempts} "
+            f"next_attempt={attempt + 1}/{max_attempts} error={detail}{log_suffix}"
+        )
+
     def __enter__(self) -> "AgentScheduler":
         self.start()
         return self
@@ -216,3 +315,24 @@ def _short_error(value: str | None, *, limit: int = 200) -> str:
     if len(text) <= limit:
         return repr(text)
     return repr(text[: limit - 3] + "...")
+
+
+def _with_runtime_retry_metadata(
+    result: AgentResult,
+    *,
+    attempt: int,
+    max_retries: int,
+    started_at: float,
+) -> AgentResult:
+    metadata = dict(result.metadata)
+    metadata["runtime_retry"] = {
+        "attempt": attempt,
+        "max_retries": max_retries,
+        "max_attempts": max_retries + 1,
+    }
+    return result.with_status(
+        result.status,
+        started_at=started_at,
+        finished_at=result.finished_at or time.time(),
+        metadata=metadata,
+    )

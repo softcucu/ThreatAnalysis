@@ -43,20 +43,21 @@ OUTPUT_SCHEMA = {
 }
 
 
-def router(global_concurrency=2, by_task_type=None):
+def router(global_concurrency=2, by_task_type=None, max_retries=None):
+    data = {
+        "models": {
+            "unit": {"model": "test-model"},
+            "slow": {"model": "slow-model"},
+        },
+        "concurrency": {
+            "global": global_concurrency,
+            "by_task_type": by_task_type or {},
+        },
+    }
+    if max_retries is not None:
+        data["retry"] = {"max_retries": max_retries}
     return ModelRouter(
-        RuntimeConfig.from_dict(
-            {
-                "models": {
-                    "unit": {"model": "test-model"},
-                    "slow": {"model": "slow-model"},
-                },
-                "concurrency": {
-                    "global": global_concurrency,
-                    "by_task_type": by_task_type or {},
-                },
-            }
-        )
+        RuntimeConfig.from_dict(data)
     )
 
 
@@ -408,6 +409,84 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertIsInstance(scheduler.progress_reporter, ProgressPrinter)
         self.assertTrue(scheduler.progress_reporter.enabled)
+
+    def test_scheduler_retries_failed_task_by_default_three_times(self):
+        attempts = 0
+        stream = io.StringIO()
+        progress = ProgressPrinter(enabled=True, stream=stream)
+
+        def run(task, model_config, prompt):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 3:
+                raise RuntimeError(f"transient failure {attempts}")
+            return json.dumps({"task_id": task.task_id, "model": model_config.model})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FunctionAgentRunner(run),
+                model_router=router(),
+                progress_reporter=progress,
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(attempts, 4)
+        self.assertEqual(
+            result.metadata["runtime_retry"],
+            {"attempt": 4, "max_retries": 3, "max_attempts": 4},
+        )
+        progress_text = stream.getvalue()
+        self.assertIn("task retrying: task_id=task-1 task_type=unit", progress_text)
+        self.assertIn("next_attempt=4/4", progress_text)
+
+    def test_scheduler_retries_output_validation_failure(self):
+        attempts = 0
+
+        def run(task, model_config, prompt):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return json.dumps({"task_id": task.task_id, "extra": True})
+            return json.dumps({"task_id": task.task_id, "model": model_config.model})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FunctionAgentRunner(run),
+                model_router=router(max_retries=1),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(result.metadata["runtime_retry"]["attempt"], 2)
+        self.assertEqual(result.metadata["runtime_retry"]["max_retries"], 1)
+
+    def test_scheduler_respects_configured_retry_count(self):
+        attempts = 0
+
+        def run(task, model_config, prompt):
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError(f"still failing {attempts}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FunctionAgentRunner(run),
+                model_router=router(max_retries=1),
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertEqual(attempts, 2)
+        self.assertIn("still failing 2", result.error)
+        self.assertEqual(
+            result.metadata["runtime_retry"],
+            {"attempt": 2, "max_retries": 1, "max_attempts": 2},
+        )
 
     def test_parse_json_output_extracts_embedded_json(self):
         self.assertEqual(
@@ -919,6 +998,7 @@ class AgentRuntimeTests(unittest.TestCase):
                         },
                         "concurrency": {"by_task_type": {"unit": 2}},
                         "progress": {"enabled": True},
+                        "retry": {"max_retries": 2},
                     }
                 ),
                 encoding="utf-8",
@@ -933,6 +1013,12 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(config.model_resource_limits["backup"], 1)
         self.assertEqual(config.task_type_concurrency["unit"], 2)
         self.assertTrue(config.progress_enabled)
+        self.assertEqual(config.retry_max_retries, 2)
+
+    def test_runtime_config_defaults_to_three_retries(self):
+        config = RuntimeConfig.from_dict({"models": {"unit": "test-model"}})
+
+        self.assertEqual(config.retry_max_retries, 3)
 
     def test_task_can_load_schema_from_path(self):
         with tempfile.TemporaryDirectory() as tmp:

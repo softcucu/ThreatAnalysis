@@ -43,6 +43,9 @@
   "concurrency": {
     "global": 7
   },
+  "retry": {
+    "max_retries": 3
+  },
   "progress": {
     "enabled": true
   }

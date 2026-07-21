@@ -8,6 +8,9 @@ from typing import Any, Mapping
 from agent_runtime.errors import ModelRouteError
 
 
+DEFAULT_MAX_RETRIES = 3
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     model: str
@@ -40,6 +43,7 @@ class RuntimeConfig:
     global_concurrency: int = 1
     task_type_concurrency: Mapping[str, int] = field(default_factory=dict)
     progress_enabled: bool = False
+    retry_max_retries: int = DEFAULT_MAX_RETRIES
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "RuntimeConfig":
@@ -66,6 +70,7 @@ class RuntimeConfig:
                 for task_type, limit in concurrency.get("by_task_type", {}).items()
             },
             progress_enabled=_progress_enabled_from_data(data),
+            retry_max_retries=_retry_max_retries_from_data(data),
         )
 
 
@@ -75,6 +80,8 @@ class ModelRouter:
     def __init__(self, config: RuntimeConfig):
         if config.global_concurrency < 1:
             raise ValueError("global_concurrency must be >= 1")
+        if config.retry_max_retries < 0:
+            raise ValueError("retry max_retries must be >= 0")
         self._config = config
 
     @classmethod
@@ -88,6 +95,10 @@ class ModelRouter:
     @property
     def progress_enabled(self) -> bool:
         return self._config.progress_enabled
+
+    @property
+    def retry_max_retries(self) -> int:
+        return self._config.retry_max_retries
 
     def route(self, task_type: str) -> ModelConfig:
         try:
@@ -157,6 +168,24 @@ def _progress_enabled_from_data(data: Mapping[str, Any]) -> bool:
     if isinstance(progress, Mapping):
         return _bool_from_value(progress.get("enabled", False))
     return _bool_from_value(progress)
+
+
+def _retry_max_retries_from_data(data: Mapping[str, Any]) -> int:
+    missing = object()
+    retry = data.get("retry", missing)
+    if isinstance(retry, Mapping):
+        value = retry.get("max_retries", data.get("max_retries", DEFAULT_MAX_RETRIES))
+    elif retry is missing:
+        value = data.get("max_retries", DEFAULT_MAX_RETRIES)
+    elif retry is False:
+        value = 0
+    elif retry is True:
+        value = DEFAULT_MAX_RETRIES
+    elif retry is None:
+        value = DEFAULT_MAX_RETRIES
+    else:
+        value = retry
+    return int(value)
 
 
 def _bool_from_value(value: Any) -> bool:

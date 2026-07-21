@@ -178,6 +178,9 @@ cp agent-runtime.example.json agent-runtime.json
   "concurrency": {
     "global": 7
   },
+  "retry": {
+    "max_retries": 3
+  },
   "progress": {
     "enabled": true
   }
@@ -208,6 +211,7 @@ cp agent-runtime.example.json agent-runtime.json
 - `model_resources` 配置每个资源池的并发度，这是主要限流方式。
 - `concurrency.global` 是 scheduler worker 总数，通常设置为各模型资源池并发度之和或略高。
 - `concurrency.by_task_type` 仍可作为兼容性的额外限制，但默认不需要配置。
+- `retry.max_retries` 是任务失败后的最大重试次数，未配置时默认 3 次；设置为 `0` 可关闭重试。
 - `progress.enabled` 是全局进度打印开关。开启后会向 stderr 输出 opencode 连接检查、pipeline 阶段、任务排队、任务开始、任务完成和失败信息；关闭后只保留最终 JSON 输出。
 
 opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架中的 `OpenCodeAgentRunner` 会在启动或连接 server 前，把配置的所有 skills 同步到 opencode 项目目录的 `.opencode/skills/<skill-name>/`，并在该目录的 `opencode.json` 中配置 `skills.paths` 指向同一个 `.opencode/skills` 目录；每个 `AgentTask` 会创建独立 opencode session，并通过 `/session/{id}/message` 发送 `/<skill-name>` 开头的提示词调用该 skill。运行时 prompt 只包含当前任务说明、输入文件和 JSON schema，不内联 skill 正文、模型配置或输出路径；prompt 会要求模型直接返回 JSON 文本，不要写结果文件。

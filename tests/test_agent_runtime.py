@@ -729,6 +729,80 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn('"task_id": "task-1"', raw_text)
         self.assertNotIn("not json", raw_text)
 
+    def test_opencode_runner_repair_output_uses_messages_after_repair_prompt(self):
+        repair_sent = False
+        repair_message_gets = 0
+
+        def user_message(message_id, text):
+            return {
+                "info": {"id": message_id, "role": "user", "sessionID": "session-001"},
+                "parts": [{"type": "text", "text": text}],
+            }
+
+        def assistant_message(message_id, text):
+            return {
+                "info": {"id": message_id, "role": "assistant", "sessionID": "session-001"},
+                "parts": [{"type": "text", "text": text}],
+            }
+
+        invalid_json = json.dumps({"task_id": "wrong"})
+        final_json = json.dumps(
+            {
+                "task_id": "task-1",
+                "model": "test-provider/test-model",
+            }
+        )
+
+        class FakeOpenCodeRunner(OpenCodeAgentRunner):
+            def start(self):
+                return None
+
+            def _request_json(self, method, path, payload=None, *, query=None):
+                nonlocal repair_sent, repair_message_gets
+                if method == "GET" and path == "/skill":
+                    return [{"name": "example-skill", "location": "test", "content": ""}]
+                if method == "POST" and path == "/session":
+                    return {"id": "session-001", "title": payload.get("title")}
+                if method == "POST" and path == "/session/session-001/message":
+                    text = payload["parts"][0]["text"]
+                    if text == JSON_OUTPUT_REPAIR_PROMPT:
+                        repair_sent = True
+                        return user_message("user-repair", text)
+                    return assistant_message("assistant-invalid", invalid_json)
+                if method == "GET" and path == "/session/session-001/message":
+                    messages = [
+                        user_message("user-initial", "Produce output."),
+                        assistant_message("assistant-invalid", invalid_json),
+                    ]
+                    if repair_sent:
+                        repair_message_gets += 1
+                        messages.append(user_message("user-repair", JSON_OUTPUT_REPAIR_PROMPT))
+                        messages.extend(
+                            [
+                                assistant_message("assistant-repair-analysis", "先修复输出。"),
+                                assistant_message("assistant-repair-final", final_json),
+                            ]
+                        )
+                    return messages
+                raise AssertionError((method, path, payload, query))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FakeOpenCodeRunner(start_command=None, cwd=tmp),
+                model_router=opencode_router(),
+                max_retries=0,
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+            raw_text = Path(result.output_path + ".raw.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(result.output["model"], "test-provider/test-model")
+        self.assertEqual(repair_message_gets, 1)
+        self.assertIn("先修复输出。", raw_text)
+        self.assertIn('"task_id": "task-1"', raw_text)
+        self.assertNotIn('"task_id": "wrong"', raw_text)
+
     def test_opencode_runner_fetches_public_messages_when_prompt_response_is_not_assistant(self):
         requests = []
 

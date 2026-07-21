@@ -423,12 +423,19 @@ class OpenCodeAgentRunner:
 
         try:
             self.start()
+            before_repair_message_count = self._message_count(session_id, directory)
             response = self._post_json(
                 f"/session/{session_id}/message",
                 self._message_payload(JSON_OUTPUT_REPAIR_PROMPT, model_config),
                 query=self._opencode_query(directory),
             )
-            output_text = self._latest_assistant_output_text(response, str(session_id), directory)
+            output_text = self._assistant_output_text(
+                response,
+                str(session_id),
+                directory,
+                after_message_count=before_repair_message_count,
+                after_prompt=JSON_OUTPUT_REPAIR_PROMPT,
+            )
             if not output_text.strip():
                 raise RuntimeError(
                     f"OpenCode repair completed without assistant text response: {session_id}"
@@ -536,6 +543,9 @@ class OpenCodeAgentRunner:
         response: object,
         session_id: str,
         directory: Path,
+        *,
+        after_message_count: int | None = None,
+        after_prompt: str | None = None,
     ) -> str:
         direct_text = _assistant_response_text(response)
         try:
@@ -547,18 +557,14 @@ class OpenCodeAgentRunner:
         except RuntimeError:
             return direct_text
 
-        messages_text = _assistant_messages_text(messages)
+        messages_text = _assistant_messages_text(
+            messages,
+            after_message_count=after_message_count,
+            after_prompt=after_prompt,
+        )
         return messages_text or direct_text
 
-    def _latest_assistant_output_text(
-        self,
-        response: object,
-        session_id: str,
-        directory: Path,
-    ) -> str:
-        direct_text = _assistant_response_text(response)
-        if direct_text.strip():
-            return direct_text
+    def _message_count(self, session_id: object, directory: Path) -> int | None:
         try:
             messages = self._request_json(
                 "GET",
@@ -566,9 +572,10 @@ class OpenCodeAgentRunner:
                 query={**self._opencode_query(directory), "limit": "100"},
             )
         except RuntimeError:
-            return direct_text
+            return None
 
-        return _latest_assistant_message_text(messages) or direct_text
+        items = _message_items(messages)
+        return None if items is None else len(items)
 
     def _verify_skill_available(self, skill_name: str, directory: Path) -> None:
         try:
@@ -799,30 +806,61 @@ def _skill_names(skills: object) -> set[str] | None:
     return names
 
 
-def _assistant_messages_text(messages: object) -> str:
+def _assistant_messages_text(
+    messages: object,
+    *,
+    after_message_count: int | None = None,
+    after_prompt: str | None = None,
+) -> str:
     texts: list[str] = []
     items = _message_items(messages)
     if items is None:
         text = _assistant_response_text(messages)
         return text.strip()
 
-    for item in items:
+    start_index = _message_text_start_index(
+        items,
+        after_message_count=after_message_count,
+        after_prompt=after_prompt,
+    )
+    if start_index is None:
+        return ""
+
+    for item in items[start_index:]:
         text = _assistant_response_text(item).strip()
         if text:
             texts.append(text)
     return "\n".join(texts).strip()
 
 
-def _latest_assistant_message_text(messages: object) -> str:
-    items = _message_items(messages)
-    if items is None:
-        return _assistant_response_text(messages).strip()
+def _message_text_start_index(
+    items: list[object],
+    *,
+    after_message_count: int | None,
+    after_prompt: str | None,
+) -> int | None:
+    if after_message_count is None and after_prompt is None:
+        return 0
 
-    for item in reversed(items):
-        text = _assistant_response_text(item).strip()
-        if text:
-            return text
-    return ""
+    prompt_index = None if after_prompt is None else _last_prompt_message_index(items, after_prompt)
+    if prompt_index is not None:
+        return prompt_index + 1
+    if after_message_count is not None and 0 <= after_message_count < len(items):
+        return after_message_count
+    return None
+
+
+def _last_prompt_message_index(items: list[object], prompt: str) -> int | None:
+    expected = prompt.strip()
+    for index in range(len(items) - 1, -1, -1):
+        item = items[index]
+        if not isinstance(item, Mapping):
+            continue
+        if _message_role(item) == "assistant":
+            continue
+        if _extract_response_text(item).strip() == expected:
+            return index
+    return None
 
 
 def _assistant_response_text(response: object) -> str:

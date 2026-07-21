@@ -10,6 +10,7 @@ from unittest import mock
 from pathlib import Path
 
 from agent_runtime import (
+    AgentResult,
     AgentScheduler,
     AgentSubmitter,
     AgentTask,
@@ -406,6 +407,61 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("task completed: task_id=task-1 task_type=unit", progress_text)
         self.assertIn("runtime stopped", progress_text)
 
+    def test_progress_reporter_outputs_repair_steps(self):
+        class RepairingRunner:
+            def __init__(self):
+                self.repair_errors = []
+
+            def run(self, task, model_config, prompt):
+                return AgentResult(
+                    task_id=task.task_id,
+                    task_type=task.task_type,
+                    status=TaskStatus.SUCCEEDED,
+                    output_path=task.output_path,
+                    model=model_config.model,
+                    raw_output=json.dumps({"task_id": task.task_id}),
+                    metadata=dict(task.metadata),
+                )
+
+            def repair_output_after_validation_failure(
+                self,
+                task,
+                model_config,
+                result,
+                validation_error,
+            ):
+                self.repair_errors.append(validation_error)
+                return result.with_status(
+                    TaskStatus.SUCCEEDED,
+                    raw_output=json.dumps(
+                        {
+                            "task_id": task.task_id,
+                            "model": model_config.model,
+                        }
+                    ),
+                )
+
+        stream = io.StringIO()
+        progress = ProgressPrinter(enabled=True, stream=stream)
+        runner = RepairingRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=runner,
+                model_router=router(),
+                progress_reporter=progress,
+            )
+            with scheduler:
+                result = AgentSubmitter(scheduler).submit(self.make_task(tmp)).wait(timeout=5)
+
+        self.assertEqual(result.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(result.output["model"], "test-model")
+        self.assertEqual(len(runner.repair_errors), 1)
+        progress_text = stream.getvalue()
+        self.assertIn("task output validation failed; repair starting", progress_text)
+        self.assertIn("task output repair returned: task_id=task-1", progress_text)
+        self.assertIn("task output repair accepted: task_id=task-1", progress_text)
+        self.assertIn("task completed: task_id=task-1 task_type=unit", progress_text)
+
     def test_scheduler_uses_progress_switch_from_config(self):
         scheduler = AgentScheduler(
             runner=FunctionAgentRunner(lambda task, model_config, prompt: "[]"),
@@ -726,6 +782,10 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(messages[-1], ("session-002", JSON_OUTPUT_REPAIR_PROMPT))
         self.assertEqual(result.metadata["runtime_retry"]["attempt"], 2)
         self.assertTrue(result.metadata["opencode"]["repair_attempted"])
+        self.assertEqual(
+            result.metadata["opencode"]["repair_output_source"],
+            "assistant_messages_after_repair_prompt",
+        )
         self.assertIn('"task_id": "task-1"', raw_text)
         self.assertNotIn("not json", raw_text)
 

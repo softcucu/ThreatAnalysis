@@ -451,6 +451,9 @@ class OpenCodeAgentRunner:
                         "task_type": task.task_type,
                         "model": model_config.model,
                         "repair_prompt": JSON_OUTPUT_REPAIR_PROMPT,
+                        "repair_message_boundary_count": before_repair_message_count,
+                        "repair_output_source": "assistant_messages_after_repair_prompt",
+                        "repair_raw_output_path": str(raw_output_path),
                         "validation_error": validation_error,
                         "repair_response": response,
                     },
@@ -463,6 +466,9 @@ class OpenCodeAgentRunner:
                 **dict(opencode_metadata),
                 "repair_prompt": JSON_OUTPUT_REPAIR_PROMPT,
                 "repair_attempted": True,
+                "repair_message_boundary_count": before_repair_message_count,
+                "repair_output_source": "assistant_messages_after_repair_prompt",
+                "repair_raw_output_path": str(raw_output_path),
             }
             return result.with_status(
                 TaskStatus.SUCCEEDED,

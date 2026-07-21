@@ -245,6 +245,11 @@ class AgentScheduler:
             try:
                 output = parse_validate_and_write_output(task, raw=result.raw_output)
             except OutputValidationError as exc:
+                self._progress(
+                    f"task output validation failed; repair starting: task_id={task.task_id} "
+                    f"task_type={task.task_type} model={model_config.model} "
+                    f"error={_short_error(str(exc))}"
+                )
                 repaired = self._repair_output_after_validation_failure(
                     task,
                     model_config,
@@ -253,24 +258,48 @@ class AgentScheduler:
                 )
                 if repaired is not None:
                     if repaired.status != TaskStatus.SUCCEEDED:
+                        self._progress(
+                            f"task output repair failed: task_id={task.task_id} "
+                            f"task_type={task.task_type} model={model_config.model} "
+                            f"error={_short_error(repaired.error)}"
+                        )
                         return repaired
+                    self._progress(
+                        f"task output repair returned: task_id={task.task_id} "
+                        f"task_type={task.task_type} model={model_config.model} "
+                        f"raw_output={_raw_output_status(repaired.raw_output)}"
+                    )
                     try:
                         output = parse_validate_and_write_output(
                             task,
                             raw=repaired.raw_output,
                         )
                     except Exception as repair_exc:
+                        self._progress(
+                            f"task output repair rejected: task_id={task.task_id} "
+                            f"task_type={task.task_type} model={model_config.model} "
+                            f"error={_short_error(str(repair_exc))}"
+                        )
                         return repaired.with_status(
                             TaskStatus.FAILED,
                             error=str(repair_exc),
                             finished_at=time.time(),
                         )
+                    self._progress(
+                        f"task output repair accepted: task_id={task.task_id} "
+                        f"task_type={task.task_type} model={model_config.model} "
+                        f"output={task.output_path}"
+                    )
                     return repaired.with_status(
                         TaskStatus.SUCCEEDED,
                         output=output,
                         raw_output=None,
                     )
 
+                self._progress(
+                    f"task output repair unavailable: task_id={task.task_id} "
+                    f"task_type={task.task_type} model={model_config.model}"
+                )
                 return result.with_status(
                     TaskStatus.FAILED,
                     error=str(exc),
@@ -370,6 +399,12 @@ def _short_error(value: str | None, *, limit: int = 200) -> str:
     if len(text) <= limit:
         return repr(text)
     return repr(text[: limit - 3] + "...")
+
+
+def _raw_output_status(value: str | None) -> str:
+    if value is None:
+        return "missing"
+    return f"{len(value)} chars"
 
 
 def _with_runtime_retry_metadata(

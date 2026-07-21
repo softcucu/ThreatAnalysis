@@ -265,6 +265,16 @@ python3 scripts/run_threat_analysis.py \
   --high-risk-batch src/parser src/protocol
 ```
 
+如果需要继续已有 run，加上 `--resume`。未传 `--run-id` 时会自动选择 `artifacts/runs/` 下最近修改的 run；也可以显式传入同一个 `--run-id`。运行时会检查每个 agent 任务的 `output_path`，如果文件已存在且通过对应 JSON schema 校验，就跳过该任务并复用该输出；不存在或校验失败的任务会重新执行：
+
+```bash
+python3 scripts/run_threat_analysis.py \
+  --config agent-runtime.json \
+  --input product.md \
+  --run-id demo-run \
+  --resume
+```
+
 常用参数：
 
 - `--opencode-base-url`：opencode server 地址；未传且自动启动 opencode 时使用随机未占用端口。
@@ -273,6 +283,7 @@ python3 scripts/run_threat_analysis.py \
 - `--opencode-password`：basic auth 密码；未传时读取 `OPENCODE_PASSWORD`。
 - `--opencode-agent`：发送给 opencode 的 agent 名称。
 - `--timeout`：等待每批 agent 任务的超时时间。
+- `--resume`：继续已有 run；未传 `--run-id` 时使用最近修改的 run，任务输出文件已存在且 schema 校验通过时跳过该任务。
 - `--delete-session`：任务完成后删除对应 opencode session。
 - `--print-progress` / `--no-print-progress`：覆盖配置文件中的 `progress.enabled`，控制是否打印关键步骤进度。
 

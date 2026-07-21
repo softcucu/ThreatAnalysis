@@ -86,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="本次运行 ID；未传时自动生成。",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="继续已有 run：如果任务输出文件已存在且通过 JSON schema 校验，则跳过该任务。",
+    )
+    parser.add_argument(
         "--project-root",
         default=str(PROJECT_ROOT),
         help="项目根目录，用于定位 skills，默认脚本所在仓库根目录。",
@@ -166,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> dict[str, object]:
     config = load_runtime_config(args.config)
-    run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
+    run_id = _resolve_run_id(args)
     layout = ThreatAnalysisLayout.for_run(args.artifacts_root, run_id)
     start_command = None if args.no_start_opencode else tuple(shlex.split(args.opencode_command))
     base_url = args.opencode_base_url
@@ -217,11 +222,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 high_risk_input_batches=_high_risk_batches(args.high_risk_batch),
                 attack_tree_context_files=[Path(path) for path in args.attack_tree_context],
                 timeout=args.timeout,
+                resume=args.resume,
             )
 
     return {
         "run_id": run_id,
         "artifacts_root": str(Path(args.artifacts_root)),
+        "resume": bool(args.resume),
         "value_assets": len(result.value_assets),
         "high_risk_modules": len(result.high_risk_modules),
         "attack_trees": len(result.attack_trees.get("attack_trees", [])),
@@ -239,6 +246,31 @@ def _high_risk_batches(raw_batches: list[list[str]] | None) -> list[list[Path]] 
     if not raw_batches:
         return None
     return [[Path(path) for path in batch] for batch in raw_batches]
+
+
+def _resolve_run_id(args: argparse.Namespace) -> str:
+    if args.run_id:
+        return str(args.run_id)
+    if not args.resume:
+        return time.strftime("%Y%m%d-%H%M%S")
+
+    latest = _latest_run_id(args.artifacts_root)
+    if latest is None:
+        raise ValueError("--resume requires --run-id when no previous run exists")
+    return latest
+
+
+def _latest_run_id(artifacts_root: str | Path) -> str | None:
+    runs_dir = Path(artifacts_root) / "runs"
+    if not runs_dir.exists():
+        return None
+
+    run_dirs = [path for path in runs_dir.iterdir() if path.is_dir()]
+    if not run_dirs:
+        return None
+
+    latest = max(run_dirs, key=lambda path: path.stat().st_mtime)
+    return latest.name
 
 
 if __name__ == "__main__":

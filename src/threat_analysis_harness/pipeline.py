@@ -13,7 +13,14 @@ from agent_runtime.progress import ProgressReporter
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.skills import ThreatAnalysisSkillPaths, default_skill_paths
 from threat_analysis_harness.stages.attack_trees import AttackTreeStage
-from threat_analysis_harness.stages.base import require_all_success, require_success
+from threat_analysis_harness.stages.base import (
+    completed_results,
+    fill_pending_results,
+    require_all_success,
+    require_success,
+    resume_existing_tasks,
+    run_or_resume_task,
+)
 from threat_analysis_harness.stages.high_risk_modules import HighRiskModuleStage
 from threat_analysis_harness.stages.value_assets import ValueAssetStage
 
@@ -66,6 +73,7 @@ class ThreatAnalysisPipeline:
         high_risk_input_batches: Sequence[Sequence[str | Path]] | None = None,
         attack_tree_context_files: Sequence[str | Path] = (),
         timeout: float | None = None,
+        resume: bool = False,
     ) -> ThreatAnalysisResult:
         pipeline_started_at = time.time()
         self.layout.ensure()
@@ -79,10 +87,29 @@ class ThreatAnalysisPipeline:
         self._progress(f"value asset map started: tasks={len(value_tasks)}")
         self._progress(f"high-risk module map started: tasks={len(high_risk_map_tasks)}")
 
-        value_handles = self.submitter.submit_many(value_tasks)
-        high_risk_map_handles = self.submitter.submit_many(high_risk_map_tasks)
+        value_results, pending_value_tasks, pending_value_indexes = resume_existing_tasks(
+            value_tasks,
+            resume=resume,
+            progress_reporter=self.progress_reporter,
+        )
+        (
+            high_risk_map_results,
+            pending_high_risk_map_tasks,
+            pending_high_risk_map_indexes,
+        ) = resume_existing_tasks(
+            high_risk_map_tasks,
+            resume=resume,
+            progress_reporter=self.progress_reporter,
+        )
+        value_handles = self.submitter.submit_many(pending_value_tasks)
+        high_risk_map_handles = self.submitter.submit_many(pending_high_risk_map_tasks)
 
-        value_results = require_all_success(self.submitter.wait_all(value_handles, timeout))
+        fill_pending_results(
+            value_results,
+            pending_value_indexes,
+            self.submitter.wait_all(value_handles, timeout),
+        )
+        value_results = require_all_success(completed_results(value_results))
         self._progress(f"value asset map completed: tasks={len(value_results)}")
         value_assets = self.value_assets.merge_category_outputs(
             [
@@ -91,14 +118,25 @@ class ThreatAnalysisPipeline:
             ]
         )
         self._progress(f"value asset merge completed: assets={len(value_assets)}")
-        high_risk_map_results = require_all_success(
-            self.submitter.wait_all(high_risk_map_handles, timeout)
+        fill_pending_results(
+            high_risk_map_results,
+            pending_high_risk_map_indexes,
+            self.submitter.wait_all(high_risk_map_handles, timeout),
         )
+        high_risk_map_results = require_all_success(completed_results(high_risk_map_results))
         self._progress(f"high-risk module map completed: tasks={len(high_risk_map_results)}")
         candidate_files = [result.output_path for result in high_risk_map_results]
         self._progress("high-risk module merge started: tasks=1")
         merge_task = self.high_risk_modules.build_merge_task(candidate_files=candidate_files)
-        high_risk_modules = require_success(self.submitter.submit(merge_task).wait(timeout)).output
+        high_risk_modules = require_success(
+            run_or_resume_task(
+                submitter=self.submitter,
+                task=merge_task,
+                resume=resume,
+                timeout=timeout,
+                progress_reporter=self.progress_reporter,
+            )
+        ).output
         self._progress(f"high-risk module merge completed: modules={len(high_risk_modules)}")
 
         self._progress(f"attack tree analysis started: assets={len(value_assets)}")
@@ -107,6 +145,7 @@ class ThreatAnalysisPipeline:
             high_risk_modules=high_risk_modules,
             context_files=attack_tree_context_files,
             timeout=timeout,
+            resume=resume,
         )
         attack_tree_count = len(attack_trees.get("attack_trees", []))
         self._progress(f"attack tree analysis completed: trees={attack_tree_count}")

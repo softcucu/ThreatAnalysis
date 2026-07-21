@@ -13,7 +13,7 @@ from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.errors import ArtifactConsistencyError
 from threat_analysis_harness.schemas import ATTACK_TREE_SCHEMA
-from threat_analysis_harness.stages.base import require_all_success
+from threat_analysis_harness.stages.base import require_all_success, run_or_resume_tasks
 
 
 class AttackTreeStage:
@@ -79,6 +79,7 @@ class AttackTreeStage:
         context_files: Sequence[str | Path] = (),
         runtime_prompt: str | None = None,
         timeout: float | None = None,
+        resume: bool = False,
     ) -> dict[str, Any]:
         self.layout.ensure()
         tasks = self.build_tasks(
@@ -87,8 +88,15 @@ class AttackTreeStage:
             context_files=context_files,
             runtime_prompt=runtime_prompt,
         )
-        handles = self.submitter.submit_many(tasks)
-        results = require_all_success(self.submitter.wait_all(handles, timeout))
+        results = require_all_success(
+            run_or_resume_tasks(
+                submitter=self.submitter,
+                tasks=tasks,
+                resume=resume,
+                timeout=timeout,
+                progress_reporter=getattr(self.submitter.scheduler, "progress_reporter", None),
+            )
+        )
         normalized_outputs = [
             normalize_attack_tree_output(
                 result.output,

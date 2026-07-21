@@ -263,6 +263,65 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             self.assertIn("attack tree analysis completed: trees=1", progress_text)
             self.assertIn("pipeline completed: duration=", progress_text)
 
+    def test_pipeline_resume_skips_existing_task_outputs(self):
+        def run(task, model_config, prompt):
+            if task.task_type == "value_asset_map":
+                if task.metadata.get("asset_category") == "数据资产":
+                    return json.dumps(VALUE_ASSETS, ensure_ascii=False)
+                return "[]"
+            if task.task_type == "high_risk_module_map":
+                if task.metadata.get("high_risk_category") == "不可信来源数据解析或处理代码":
+                    return json.dumps(HIGH_RISK_MODULES, ensure_ascii=False)
+                return "[]"
+            if task.task_type == "high_risk_module_merge":
+                return json.dumps(HIGH_RISK_MODULES, ensure_ascii=False)
+            if task.task_type == "attack_tree_by_asset":
+                return json.dumps(attack_tree_output(), ensure_ascii=False)
+            raise AssertionError(task.task_type)
+
+        unexpected_calls = []
+
+        def fail_if_called(task, model_config, prompt):
+            unexpected_calls.append(task.task_id)
+            raise AssertionError(f"resume should skip task: {task.task_id}")
+
+        progress_stream = io.StringIO()
+        progress = ProgressPrinter(enabled=True, stream=progress_stream)
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = ThreatAnalysisLayout.for_run(tmp, "run-001")
+            with AgentScheduler(
+                runner=FunctionAgentRunner(run),
+                model_router=runtime_router(),
+            ) as scheduler:
+                pipeline = ThreatAnalysisPipeline(
+                    submitter=AgentSubmitter(scheduler),
+                    layout=layout,
+                    skill_paths=default_skill_paths(ROOT),
+                )
+                pipeline.run(input_files=[INPUT], timeout=5)
+
+            with AgentScheduler(
+                runner=FunctionAgentRunner(fail_if_called),
+                model_router=runtime_router(),
+                progress_reporter=progress,
+            ) as scheduler:
+                pipeline = ThreatAnalysisPipeline(
+                    submitter=AgentSubmitter(scheduler),
+                    layout=layout,
+                    skill_paths=default_skill_paths(ROOT),
+                    progress_reporter=progress,
+                )
+                result = pipeline.run(input_files=[INPUT], timeout=5, resume=True)
+
+        self.assertEqual(unexpected_calls, [])
+        self.assertEqual(result.value_assets, VALUE_ASSETS)
+        self.assertEqual(result.high_risk_modules, HIGH_RISK_MODULES)
+        self.assertEqual(len(result.attack_trees["attack_trees"]), 1)
+        progress_text = progress_stream.getvalue()
+        self.assertIn("task resumed: task_id=value-asset-map-data", progress_text)
+        self.assertIn("task resumed: task_id=high-risk-module-merge", progress_text)
+        self.assertIn("task resumed: task_id=attack-tree-by-asset-001", progress_text)
+
 
 if __name__ == "__main__":
     unittest.main()

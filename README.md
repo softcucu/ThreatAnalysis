@@ -367,7 +367,7 @@ web/index.html
 - `runs/<run_id>/high_risk_modules/final/high-risk-module-merge.json`
 - `runs/<run_id>/attack_trees/final/attack_trees.json`
 
-导入后，页面会以表格展示价值资产和高风险模块，从攻击树中提取内部节点，并用可展开/收起的树状图展示每棵攻击树。
+导入后，页面会以表格展示价值资产和高风险模块，从攻击树中提取内部节点，并用根到叶的树状图展示每棵攻击树及叶子节点匹配的攻击模式标题。
 
 ## 测试
 

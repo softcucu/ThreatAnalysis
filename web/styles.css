@@ -256,50 +256,102 @@ tbody tr:last-child td {
 }
 
 .tree-body {
-  padding: 14px;
+  padding: 22px 14px 28px;
   overflow-x: auto;
 }
 
-.tree ul {
-  margin: 0;
-  padding-left: 24px;
-  list-style: none;
-}
-
-.tree li {
+.tree-diagram,
+.tree-diagram ul {
   position: relative;
-  padding: 4px 0 4px 18px;
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  padding: 24px 0 0;
+  list-style: none;
+  min-width: max-content;
 }
 
-.tree li::before {
-  position: absolute;
-  top: 18px;
-  left: 0;
-  width: 12px;
-  border-top: 1px solid var(--line-strong);
-  content: "";
+.tree-diagram {
+  padding-top: 0;
 }
 
-.tree li::after {
+.tree-diagram ul::before {
   position: absolute;
   top: 0;
-  bottom: 0;
-  left: 0;
+  left: 50%;
+  height: 24px;
   border-left: 1px solid var(--line-strong);
   content: "";
 }
 
-.tree li:last-child::after {
-  height: 18px;
+.tree-diagram li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 8px 0;
+  text-align: center;
+}
+
+.tree-diagram > li {
+  padding-top: 0;
+}
+
+.tree-diagram li::before,
+.tree-diagram li::after {
+  position: absolute;
+  top: 0;
+  width: 50%;
+  height: 24px;
+  border-top: 1px solid var(--line-strong);
+  content: "";
+}
+
+.tree-diagram li::before {
+  right: 50%;
+}
+
+.tree-diagram li::after {
+  left: 50%;
+  border-left: 1px solid var(--line-strong);
+}
+
+.tree-diagram > li::before,
+.tree-diagram > li::after,
+.tree-diagram li:only-child::before,
+.tree-diagram li:only-child::after {
+  display: none;
+}
+
+.tree-diagram li:only-child {
+  padding-top: 0;
+}
+
+.tree-diagram li:first-child::before,
+.tree-diagram li:last-child::after {
+  border: 0;
+}
+
+.tree-diagram li:first-child::after {
+  border-radius: 6px 0 0 0;
+}
+
+.tree-diagram li:last-child::before {
+  border-right: 1px solid var(--line-strong);
+  border-radius: 0 6px 0 0;
 }
 
 .tree-node {
-  min-width: 260px;
-  max-width: 620px;
-  padding: 10px 12px;
+  display: grid;
+  place-items: center;
+  width: clamp(160px, 20vw, 260px);
+  min-height: 44px;
+  padding: 9px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   background: #ffffff;
+  box-shadow: 0 8px 20px rgb(23 32 51 / 6%);
+  overflow-wrap: anywhere;
 }
 
 .tree-node.root {
@@ -316,60 +368,82 @@ tbody tr:last-child td {
   background: #fbfcfe;
 }
 
-.node-toggle {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-height: 28px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-
-.node-toggle::before {
-  display: inline-grid;
-  width: 18px;
-  height: 18px;
-  margin-right: 6px;
-  place-items: center;
-  color: var(--accent-dark);
-  content: "▾";
-}
-
-.tree-node.is-collapsed > .node-toggle::before {
-  content: "▸";
-}
-
-.node-toggle:disabled {
-  cursor: default;
-}
-
-.node-toggle:disabled::before {
-  content: "";
-}
-
 .node-title {
+  display: block;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.leaf-patterns {
+  padding: 14px;
+  border-top: 1px solid var(--line);
+  background: #fcfdff;
+}
+
+.leaf-patterns h3 {
+  margin: 0 0 10px;
+  color: #334155;
+  font-size: 14px;
   font-weight: 720;
 }
 
-.node-type {
-  margin-left: 8px;
+.leaf-pattern-list {
+  display: grid;
+  gap: 8px;
+}
+
+.leaf-pattern-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.leaf-pattern-row:first-child {
+  border-top: 0;
+}
+
+.leaf-pattern-row h4 {
+  margin: 0;
+  color: var(--accent-dark);
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.pattern-title-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pattern-title {
+  position: relative;
+  padding-left: 12px;
+  color: #243044;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.pattern-title::before {
+  position: absolute;
+  top: 0.65em;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  content: "";
+}
+
+.pattern-title.empty {
   color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.node-description {
-  margin-top: 6px;
-  color: #475569;
-}
-
-.tree-node.is-collapsed .node-description,
-.tree-node.is-collapsed + ul {
-  display: none;
 }
 
 .error {
@@ -407,5 +481,10 @@ tbody tr:last-child td {
 
   .tab-panel {
     padding: 12px;
+  }
+
+  .leaf-pattern-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 }

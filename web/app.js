@@ -56,18 +56,6 @@ els.attackTreesInput.addEventListener("change", (event) => {
   });
 });
 
-els.attackTreesCanvas.addEventListener("click", (event) => {
-  const toggle = event.target.closest(".node-toggle");
-  if (!toggle) {
-    return;
-  }
-  const node = toggle.closest(".tree-node");
-  if (node) {
-    const collapsed = node.classList.toggle("is-collapsed");
-    toggle.setAttribute("aria-expanded", String(!collapsed));
-  }
-});
-
 if (window.THREAT_ANALYSIS_DATA) {
   state.valueAssets = Array.isArray(window.THREAT_ANALYSIS_DATA.valueAssets)
     ? window.THREAT_ANALYSIS_DATA.valueAssets
@@ -256,12 +244,13 @@ function createTreeView(tree, index) {
   const body = document.createElement("div");
   body.className = "tree-body";
   const roots = getRootNodes(tree);
+  const inbound = buildInboundIndex(tree.edges || []);
+  const nodesById = buildNodeIndex(tree.nodes || []);
   if (!roots.length) {
     body.appendChild(emptyBlock("暂无可展示节点"));
   } else {
     const list = document.createElement("ul");
-    const inbound = buildInboundIndex(tree.edges || []);
-    const nodesById = buildNodeIndex(tree.nodes || []);
+    list.className = "tree-diagram";
     roots.forEach((root) => {
       list.appendChild(createTreeNode(root, nodesById, inbound, new Set()));
     });
@@ -269,6 +258,12 @@ function createTreeView(tree, index) {
   }
 
   wrapper.append(header, body);
+
+  const leafPatternGroups = collectLeafPatternGroups(tree, nodesById);
+  if (leafPatternGroups.length) {
+    wrapper.appendChild(createLeafPatternPanel(leafPatternGroups));
+  }
+
   return wrapper;
 }
 
@@ -277,22 +272,10 @@ function createTreeNode(node, nodesById, inbound, visited) {
   const card = document.createElement("div");
   card.className = `tree-node ${nodeClass(node)}`;
 
-  const button = document.createElement("button");
-  button.className = "node-toggle";
-  button.type = "button";
-
   const title = document.createElement("span");
   title.className = "node-title";
   title.textContent = node.node_name || node.module_name || node.node_id;
-  const type = document.createElement("span");
-  type.className = "node-type";
-  type.textContent = node.node_type || "";
-  button.append(title, type);
-
-  const description = document.createElement("div");
-  description.className = "node-description";
-  description.textContent = node.description || "";
-  card.append(button, description);
+  card.appendChild(title);
   item.appendChild(card);
 
   const childIds = inbound.get(String(node.node_id)) || [];
@@ -304,17 +287,144 @@ function createTreeNode(node, nodesById, inbound, visited) {
     .filter(Boolean);
 
   if (children.length) {
-    button.setAttribute("aria-expanded", "true");
     const list = document.createElement("ul");
     children.forEach((child) => {
       list.appendChild(createTreeNode(child, nodesById, inbound, nextVisited));
     });
     item.appendChild(list);
-  } else {
-    button.disabled = true;
   }
 
   return item;
+}
+
+function createLeafPatternPanel(groups) {
+  const section = document.createElement("section");
+  section.className = "leaf-patterns";
+
+  const heading = document.createElement("h3");
+  heading.textContent = "叶子节点匹配攻击模式";
+  section.appendChild(heading);
+
+  const list = document.createElement("div");
+  list.className = "leaf-pattern-list";
+
+  groups.forEach((group) => {
+    const row = document.createElement("section");
+    row.className = "leaf-pattern-row";
+
+    const leafTitle = document.createElement("h4");
+    leafTitle.textContent = group.title;
+    row.appendChild(leafTitle);
+
+    const patterns = document.createElement("ul");
+    patterns.className = "pattern-title-list";
+    if (group.patternTitles.length) {
+      group.patternTitles.forEach((patternTitle) => {
+        const item = document.createElement("li");
+        item.className = "pattern-title";
+        item.textContent = patternTitle;
+        patterns.appendChild(item);
+      });
+    } else {
+      const item = document.createElement("li");
+      item.className = "pattern-title empty";
+      item.textContent = "暂无匹配攻击模式";
+      patterns.appendChild(item);
+    }
+
+    row.appendChild(patterns);
+    list.appendChild(row);
+  });
+
+  section.appendChild(list);
+  return section;
+}
+
+function collectLeafPatternGroups(tree, nodesById) {
+  const groups = new Map();
+
+  (tree.nodes || [])
+    .filter((node) => node.node_type === "叶子节点")
+    .forEach((node) => ensureLeafPatternGroup(groups, node));
+
+  (tree.attack_paths || []).forEach((path) => {
+    const leafNode = findPathLeafNode(path, nodesById) || leafNodeFromPathMetadata(path);
+    if (!leafNode) {
+      return;
+    }
+
+    const group = ensureLeafPatternGroup(groups, leafNode);
+    (path.attack_patterns || []).forEach((pattern) => addPatternTitle(group, pattern));
+  });
+
+  return Array.from(groups.values()).map((group) => ({
+    title: group.title,
+    patternTitles: group.patternTitles,
+  }));
+}
+
+function ensureLeafPatternGroup(groups, node) {
+  const key = String(
+    node.node_id || node.module_name || node.node_name || `leaf-${groups.size + 1}`,
+  );
+  if (!groups.has(key)) {
+    groups.set(key, {
+      title: node.node_name || node.module_name || node.node_id || key,
+      patternTitles: [],
+      seenPatternTitles: new Set(),
+    });
+  }
+  return groups.get(key);
+}
+
+function findPathLeafNode(path, nodesById) {
+  const nodeIds = Array.isArray(path.node_ids) ? path.node_ids : [];
+  for (const nodeId of nodeIds) {
+    const node = nodesById.get(String(nodeId));
+    if (node?.node_type === "叶子节点") {
+      return node;
+    }
+  }
+  if (!nodeIds.length) {
+    return null;
+  }
+  return nodesById.get(String(nodeIds[0])) || null;
+}
+
+function leafNodeFromPathMetadata(path) {
+  const relatedModules = Array.isArray(path.related_high_risk_modules)
+    ? path.related_high_risk_modules
+    : [];
+  const leafModule = relatedModules.find(
+    (module) => module.path_role === "外部攻击入口" || module.external_exposure === true,
+  );
+  if (!leafModule) {
+    return null;
+  }
+  return {
+    node_id: leafModule.node_id,
+    node_name: leafModule.module_name,
+    module_name: leafModule.module_name,
+  };
+}
+
+function addPatternTitle(group, pattern) {
+  const title = patternTitle(pattern);
+  const key = title.toLocaleLowerCase();
+  if (!title || group.seenPatternTitles.has(key)) {
+    return;
+  }
+  group.seenPatternTitles.add(key);
+  group.patternTitles.push(title);
+}
+
+function patternTitle(pattern) {
+  if (typeof pattern === "string") {
+    return pattern.trim();
+  }
+  return String(
+    pattern?.pattern_name || pattern?.["攻击模式名称"] || pattern?.title || pattern?.name || "",
+  ).trim();
 }
 
 function getRootNodes(tree) {

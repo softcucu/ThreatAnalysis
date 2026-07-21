@@ -292,7 +292,9 @@ python3 scripts/run_threat_analysis.py \
 也可以在代码中直接组装 pipeline：
 
 ```python
-from agent_runtime import AgentScheduler, AgentSubmitter, ModelRouter, OpenCodeAgentRunner, load_runtime_config
+from functools import partial
+
+from agent_runtime import AgentScheduler, ModelRouter, OpenCodeAgentRunner, load_runtime_config, submit_tasks
 from threat_analysis_harness.skills import default_skill_paths
 
 config = load_runtime_config("agent-runtime.json")
@@ -314,8 +316,8 @@ with runner:
         model_router=ModelRouter(config),
     )
     with scheduler:
-        submitter = AgentSubmitter(scheduler)
-        # 将 submitter 传给 ThreatAnalysisPipeline
+        pipeline_submit_tasks = partial(submit_tasks, scheduler)
+        # 将 pipeline_submit_tasks 传给 ThreatAnalysisPipeline
 ```
 
 如果用户已经手动启动了 opencode server，可以只连接已有 server：

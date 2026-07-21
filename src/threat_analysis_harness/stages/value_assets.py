@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_runtime import AgentSubmitter, AgentTask
+from agent_runtime import AgentTask, SubmitTasks
 from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
@@ -28,11 +28,11 @@ class ValueAssetStage:
     def __init__(
         self,
         *,
-        submitter: AgentSubmitter,
+        submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
         skill_path: str | Path,
     ) -> None:
-        self.submitter = submitter
+        self.submit_tasks = submit_tasks
         self.layout = layout
         self.skill_path = str(skill_path)
 
@@ -110,12 +110,11 @@ class ValueAssetStage:
                 task_id=task_id,
                 runtime_prompt=runtime_prompt,
             )
-            result = require_success(self.submitter.submit(task).wait(timeout))
+            result = require_success(self.submit_tasks([task], timeout=timeout)[0])
             return result.output
 
         tasks = self.build_category_tasks(input_files=input_files, task_id_prefix=task_id)
-        handles = self.submitter.submit_many(tasks)
-        results = require_all_success(self.submitter.wait_all(handles, timeout))
+        results = require_all_success(self.submit_tasks(tasks, timeout=timeout))
         category_outputs = [
             (str(result.metadata.get("asset_category", "")), result.output or [])
             for result in results

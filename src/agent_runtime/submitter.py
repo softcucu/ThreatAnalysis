@@ -1,11 +1,27 @@
-"""Public submission facade used by business stages."""
+"""Public task submission entry points."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping, Protocol, Sequence
 
 from agent_runtime.scheduler import AgentScheduler
 from agent_runtime.task import AgentResult, AgentTask
+
+
+TaskPayload = AgentTask | Mapping[str, Any]
+
+
+class SubmitTasks(Protocol):
+    """Callable boundary for code that only needs to submit runtime tasks."""
+
+    def __call__(
+        self,
+        tasks: Sequence[TaskPayload],
+        *,
+        timeout: float | None = None,
+    ) -> list[AgentResult]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -18,20 +34,51 @@ class TaskHandle:
 
 
 class AgentSubmitter:
-    """Small API surface that stages depend on."""
+    """Backward-compatible object facade around a scheduler."""
 
     def __init__(self, scheduler: AgentScheduler):
         self.scheduler = scheduler
 
-    def submit(self, task: AgentTask | dict) -> TaskHandle:
+    def submit_tasks(
+        self,
+        tasks: Sequence[TaskPayload],
+        *,
+        timeout: float | None = None,
+    ) -> list[AgentResult]:
+        return submit_tasks(self.scheduler, tasks, timeout=timeout)
+
+    def submit(self, task: TaskPayload) -> TaskHandle:
         task_id = self.scheduler.submit(task)
         return TaskHandle(task_id=task_id, submitter=self)
 
-    def submit_many(self, tasks: list[AgentTask | dict]) -> list[TaskHandle]:
-        return [TaskHandle(task_id=task_id, submitter=self) for task_id in self.scheduler.submit_many(tasks)]
+    def submit_many(self, tasks: Sequence[TaskPayload]) -> list[TaskHandle]:
+        return [
+            TaskHandle(task_id=task_id, submitter=self)
+            for task_id in self.scheduler.submit_many(list(tasks))
+        ]
 
-    def wait(self, task_id: str, timeout: float | None = None) -> AgentResult:
+    def wait(
+        self,
+        task_id: str,
+        timeout: float | None = None,
+    ) -> AgentResult:
         return self.scheduler.wait(task_id, timeout)
 
-    def wait_all(self, handles: list[TaskHandle], timeout: float | None = None) -> list[AgentResult]:
+    def wait_all(
+        self,
+        handles: list[TaskHandle],
+        timeout: float | None = None,
+    ) -> list[AgentResult]:
         return self.scheduler.wait_all([handle.task_id for handle in handles], timeout)
+
+
+def submit_tasks(
+    scheduler: AgentScheduler,
+    tasks: Sequence[TaskPayload],
+    *,
+    timeout: float | None = None,
+) -> list[AgentResult]:
+    """Submit tasks to a scheduler and wait for their terminal results."""
+
+    task_ids = scheduler.submit_many(list(tasks))
+    return scheduler.wait_all(task_ids, timeout)

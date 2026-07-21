@@ -2,15 +2,16 @@ import io
 import json
 import tempfile
 import unittest
+from functools import partial
 from pathlib import Path
 
 from agent_runtime import (
     AgentScheduler,
-    AgentSubmitter,
     FunctionAgentRunner,
     ModelRouter,
     ProgressPrinter,
     RuntimeConfig,
+    submit_tasks as submit_agent_tasks,
 )
 from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline
@@ -214,7 +215,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             )
             with scheduler:
                 pipeline = ThreatAnalysisPipeline(
-                    submitter=AgentSubmitter(scheduler),
+                    submit_tasks=partial(submit_agent_tasks, scheduler),
                     layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
                     skill_paths=default_skill_paths(ROOT),
                     progress_reporter=progress,
@@ -294,7 +295,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                 model_router=runtime_router(),
             ) as scheduler:
                 pipeline = ThreatAnalysisPipeline(
-                    submitter=AgentSubmitter(scheduler),
+                    submit_tasks=partial(submit_agent_tasks, scheduler),
                     layout=layout,
                     skill_paths=default_skill_paths(ROOT),
                 )
@@ -306,7 +307,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                 progress_reporter=progress,
             ) as scheduler:
                 pipeline = ThreatAnalysisPipeline(
-                    submitter=AgentSubmitter(scheduler),
+                    submit_tasks=partial(submit_agent_tasks, scheduler),
                     layout=layout,
                     skill_paths=default_skill_paths(ROOT),
                     progress_reporter=progress,

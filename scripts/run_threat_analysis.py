@@ -9,6 +9,7 @@ import os
 import shlex
 import sys
 import time
+from functools import partial
 from pathlib import Path
 
 
@@ -19,11 +20,11 @@ if str(SRC_ROOT) not in sys.path:
 
 from agent_runtime import (  # noqa: E402
     AgentScheduler,
-    AgentSubmitter,
     ModelRouter,
     OpenCodeAgentRunner,
     ProgressPrinter,
     load_runtime_config,
+    submit_tasks as submit_agent_tasks,
 )
 from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline  # noqa: E402
 from threat_analysis_harness.skills import default_skill_paths  # noqa: E402
@@ -212,7 +213,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
         with scheduler:
             pipeline = ThreatAnalysisPipeline(
-                submitter=AgentSubmitter(scheduler),
+                submit_tasks=partial(submit_agent_tasks, scheduler),
                 layout=layout,
                 skill_paths=skill_paths,
                 progress_reporter=progress,

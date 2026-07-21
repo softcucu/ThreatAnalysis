@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_runtime import AgentSubmitter, AgentTask
+from agent_runtime import AgentTask, SubmitTasks
 from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
@@ -49,12 +49,12 @@ class HighRiskModuleStage:
     def __init__(
         self,
         *,
-        submitter: AgentSubmitter,
+        submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
         map_skill_path: str | Path,
         merge_skill_path: str | Path,
     ) -> None:
-        self.submitter = submitter
+        self.submit_tasks = submit_tasks
         self.layout = layout
         self.map_skill_path = str(map_skill_path)
         self.merge_skill_path = str(merge_skill_path)
@@ -143,14 +143,13 @@ class HighRiskModuleStage:
             input_batches=input_batches,
             runtime_prompt=map_runtime_prompt,
         )
-        map_handles = self.submitter.submit_many(map_tasks)
-        map_results = require_all_success(self.submitter.wait_all(map_handles, timeout))
+        map_results = require_all_success(self.submit_tasks(map_tasks, timeout=timeout))
         candidate_files = [result.output_path for result in map_results]
         merge_task = self.build_merge_task(
             candidate_files=candidate_files,
             runtime_prompt=merge_runtime_prompt,
         )
-        merge_result = require_success(self.submitter.submit(merge_task).wait(timeout))
+        merge_result = require_success(self.submit_tasks([merge_task], timeout=timeout)[0])
         return merge_result.output
 
 

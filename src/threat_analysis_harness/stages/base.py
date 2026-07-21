@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Protocol
 
-from agent_runtime import AgentResult, AgentSubmitter, AgentTask, TaskStatus
+from agent_runtime import AgentResult, AgentTask, SubmitTasks, TaskStatus
 from agent_runtime.output_validation import parse_validate_and_write_output
-from agent_runtime.progress import ProgressReporter
 
 from threat_analysis_harness.errors import StageExecutionError
+
+
+class ProgressReporter(Protocol):
+    def emit(self, message: str) -> None:
+        ...
 
 
 def require_success(result: AgentResult) -> AgentResult:
@@ -50,7 +54,7 @@ def existing_success_result(task: AgentTask) -> AgentResult | None:
 
 def run_or_resume_tasks(
     *,
-    submitter: AgentSubmitter,
+    submit_tasks: SubmitTasks,
     tasks: list[AgentTask],
     resume: bool = False,
     timeout: float | None = None,
@@ -63,8 +67,7 @@ def run_or_resume_tasks(
     )
 
     if pending:
-        handles = submitter.submit_many(pending)
-        pending_results = submitter.wait_all(handles, timeout)
+        pending_results = submit_tasks(pending, timeout=timeout)
         fill_pending_results(results, pending_indexes, pending_results)
 
     return completed_results(results)
@@ -72,14 +75,14 @@ def run_or_resume_tasks(
 
 def run_or_resume_task(
     *,
-    submitter: AgentSubmitter,
+    submit_tasks: SubmitTasks,
     task: AgentTask,
     resume: bool = False,
     timeout: float | None = None,
     progress_reporter: ProgressReporter | None = None,
 ) -> AgentResult:
     return run_or_resume_tasks(
-        submitter=submitter,
+        submit_tasks=submit_tasks,
         tasks=[task],
         resume=resume,
         timeout=timeout,

@@ -21,6 +21,7 @@ from agent_runtime import (
     ProgressPrinter,
     RuntimeConfig,
     TaskStatus,
+    submit_tasks,
 )
 from agent_runtime.errors import TaskValidationError
 from agent_runtime.config import load_runtime_config
@@ -166,6 +167,22 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual(result.status, TaskStatus.SUCCEEDED)
             self.assertEqual(result.output["task_id"], "task-1")
             self.assertEqual(json.loads(Path(result.output_path).read_text())["task_id"], "task-1")
+
+    def test_submit_tasks_function_runs_tasks_and_returns_results(self):
+        def run(task, model_config, prompt):
+            return json.dumps({"task_id": task.task_id, "model": model_config.model})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scheduler = AgentScheduler(
+                runner=FunctionAgentRunner(run),
+                model_router=router(),
+            )
+            with scheduler:
+                results = submit_tasks(scheduler, [self.make_task(tmp)], timeout=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, TaskStatus.SUCCEEDED)
+        self.assertEqual(results[0].output, {"task_id": "task-1", "model": "test-model"})
 
     def test_submitter_extracts_json_and_writes_canonical_output(self):
         def run(task, model_config, prompt):

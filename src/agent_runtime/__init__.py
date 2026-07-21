@@ -15,7 +15,7 @@ from agent_runtime.runner import (
     OpenCodeAgentRunner,
 )
 from agent_runtime.scheduler import AgentScheduler
-from agent_runtime.submitter import AgentSubmitter, TaskHandle
+from agent_runtime.submitter import AgentSubmitter, SubmitTasks, TaskHandle, submit_tasks
 from agent_runtime.task import AgentResult, AgentTask, TaskStatus
 
 __all__ = [
@@ -32,10 +32,12 @@ __all__ = [
     "ProgressPrinter",
     "ProgressReporter",
     "RuntimeConfig",
+    "SubmitTasks",
     "TaskHandle",
     "TaskStatus",
     "load_runtime_config",
     "parse_and_validate_output",
     "parse_validate_and_write_output",
+    "submit_tasks",
     "validate_json_schema",
 ]

@@ -7,13 +7,17 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_runtime import AgentSubmitter, AgentTask
+from agent_runtime import AgentTask, SubmitTasks
 from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.errors import ArtifactConsistencyError
 from threat_analysis_harness.schemas import ATTACK_TREE_SCHEMA
-from threat_analysis_harness.stages.base import require_all_success, run_or_resume_tasks
+from threat_analysis_harness.stages.base import (
+    ProgressReporter,
+    require_all_success,
+    run_or_resume_tasks,
+)
 
 
 class AttackTreeStage:
@@ -22,11 +26,11 @@ class AttackTreeStage:
     def __init__(
         self,
         *,
-        submitter: AgentSubmitter,
+        submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
         skill_path: str | Path,
     ) -> None:
-        self.submitter = submitter
+        self.submit_tasks = submit_tasks
         self.layout = layout
         self.skill_path = str(skill_path)
 
@@ -80,6 +84,7 @@ class AttackTreeStage:
         runtime_prompt: str | None = None,
         timeout: float | None = None,
         resume: bool = False,
+        progress_reporter: ProgressReporter | None = None,
     ) -> dict[str, Any]:
         self.layout.ensure()
         tasks = self.build_tasks(
@@ -90,11 +95,11 @@ class AttackTreeStage:
         )
         results = require_all_success(
             run_or_resume_tasks(
-                submitter=self.submitter,
+                submit_tasks=self.submit_tasks,
                 tasks=tasks,
                 resume=resume,
                 timeout=timeout,
-                progress_reporter=getattr(self.submitter.scheduler, "progress_reporter", None),
+                progress_reporter=progress_reporter,
             )
         )
         normalized_outputs = [

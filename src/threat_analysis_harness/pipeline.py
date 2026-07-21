@@ -1,4 +1,4 @@
-"""Threat analysis business pipeline built on top of agent_runtime."""
+"""Threat analysis business pipeline."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_runtime import AgentSubmitter
-from agent_runtime.progress import ProgressReporter
+from agent_runtime import SubmitTasks
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.skills import ThreatAnalysisSkillPaths, default_skill_paths
 from threat_analysis_harness.stages.attack_trees import AttackTreeStage
 from threat_analysis_harness.stages.base import (
+    ProgressReporter,
     completed_results,
     fill_pending_results,
     require_all_success,
@@ -36,32 +36,28 @@ class ThreatAnalysisPipeline:
     def __init__(
         self,
         *,
-        submitter: AgentSubmitter,
+        submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
         skill_paths: ThreatAnalysisSkillPaths | None = None,
         progress_reporter: ProgressReporter | None = None,
     ) -> None:
-        self.submitter = submitter
+        self.submit_tasks = submit_tasks
         self.layout = layout
         self.skill_paths = skill_paths or default_skill_paths()
-        self.progress_reporter = progress_reporter or getattr(
-            submitter.scheduler,
-            "progress_reporter",
-            None,
-        )
+        self.progress_reporter = progress_reporter
         self.value_assets = ValueAssetStage(
-            submitter=submitter,
+            submit_tasks=submit_tasks,
             layout=layout,
             skill_path=self.skill_paths.value_asset_map,
         )
         self.high_risk_modules = HighRiskModuleStage(
-            submitter=submitter,
+            submit_tasks=submit_tasks,
             layout=layout,
             map_skill_path=self.skill_paths.high_risk_module_map,
             merge_skill_path=self.skill_paths.high_risk_module_merge,
         )
         self.attack_trees = AttackTreeStage(
-            submitter=submitter,
+            submit_tasks=submit_tasks,
             layout=layout,
             skill_path=self.skill_paths.attack_tree_by_asset,
         )
@@ -101,13 +97,17 @@ class ThreatAnalysisPipeline:
             resume=resume,
             progress_reporter=self.progress_reporter,
         )
-        value_handles = self.submitter.submit_many(pending_value_tasks)
-        high_risk_map_handles = self.submitter.submit_many(pending_high_risk_map_tasks)
 
+        pending_map_tasks = pending_value_tasks + pending_high_risk_map_tasks
+        pending_map_results = (
+            self.submit_tasks(pending_map_tasks, timeout=timeout) if pending_map_tasks else []
+        )
+        pending_value_results = pending_map_results[: len(pending_value_tasks)]
+        pending_high_risk_map_results = pending_map_results[len(pending_value_tasks) :]
         fill_pending_results(
             value_results,
             pending_value_indexes,
-            self.submitter.wait_all(value_handles, timeout),
+            pending_value_results,
         )
         value_results = require_all_success(completed_results(value_results))
         self._progress(f"value asset map completed: tasks={len(value_results)}")
@@ -121,7 +121,7 @@ class ThreatAnalysisPipeline:
         fill_pending_results(
             high_risk_map_results,
             pending_high_risk_map_indexes,
-            self.submitter.wait_all(high_risk_map_handles, timeout),
+            pending_high_risk_map_results,
         )
         high_risk_map_results = require_all_success(completed_results(high_risk_map_results))
         self._progress(f"high-risk module map completed: tasks={len(high_risk_map_results)}")
@@ -130,7 +130,7 @@ class ThreatAnalysisPipeline:
         merge_task = self.high_risk_modules.build_merge_task(candidate_files=candidate_files)
         high_risk_modules = require_success(
             run_or_resume_task(
-                submitter=self.submitter,
+                submit_tasks=self.submit_tasks,
                 task=merge_task,
                 resume=resume,
                 timeout=timeout,
@@ -146,6 +146,7 @@ class ThreatAnalysisPipeline:
             context_files=attack_tree_context_files,
             timeout=timeout,
             resume=resume,
+            progress_reporter=self.progress_reporter,
         )
         attack_tree_count = len(attack_trees.get("attack_trees", []))
         self._progress(f"attack tree analysis completed: trees={attack_tree_count}")

@@ -26,17 +26,16 @@ VALUE_ASSET_CATEGORIES: tuple[tuple[str, str, str], ...] = (
 
 class ValueAssetStage:
     task_type = "value_asset_map"
+    skill_name = "value-asset-map"
 
     def __init__(
         self,
         *,
         submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
-        skill_path: str | Path,
     ) -> None:
         self.submit_tasks = submit_tasks
         self.layout = layout
-        self.skill_path = str(skill_path)
 
     def build_task(
         self,
@@ -48,7 +47,7 @@ class ValueAssetStage:
         return {
             "task_id": task_id,
             "task_type": self.task_type,
-            "skill_path": self.skill_path,
+            "skill_name": self.skill_name,
             "runtime_prompt": runtime_prompt or _default_prompt(input_files),
             "input_files": [str(path) for path in input_files],
             "output_path": str(self.layout.value_assets_raw_dir / f"{task_id}.json"),
@@ -70,7 +69,7 @@ class ValueAssetStage:
                 {
                     "task_id": task_id,
                     "task_type": self.task_type,
-                    "skill_path": self.skill_path,
+                    "skill_name": self.skill_name,
                     "runtime_prompt": _category_prompt(
                         input_files,
                         asset_category=asset_category,

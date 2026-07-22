@@ -120,7 +120,7 @@ runs/<run_id>/attack_trees/final/attack_trees.json
 - `src/threat_analysis_harness/stages/attack_trees.py`：按资产生成攻击树任务、合并攻击树输出和产物一致性对齐。
 - `src/threat_analysis_harness/task_agent_submitter.py`：harness 到 `task_agent.run_opencode_task()` 的同步提交适配器。
 - `src/task_agent/`：新的 OpenCode/nga Serve 任务框架，负责模型池、队列、会话、重试和 JSON schema 校验。
-- `skills/threat-analysis-harness/`：各阶段 agent 使用的 skill 提示词。
+- `src/threat_analysis_harness/skills/`：各阶段 agent 使用的 skill 提示词。
 - `web/index.html`：威胁分析产物查看页，提供价值资产、高风险模块、内部节点和攻击树四个页签。
 
 ## 模型与 opencode 运行方式
@@ -137,69 +137,44 @@ cp src/task_agent/task-agent.example.yaml task-agent.yaml
 - `context.work_dir`：agent 可写工作目录，任务过程中的写入会限制在这里。
 - `context.workspace_dir`：task_agent 管理 Serve 进程和运行状态的组件工作区。
 - `serve`：OpenCode/nga Serve 的工具、端口、超时、环境变量和 OpenCode 原生配置。
-- `serve.opencode_config.skills.paths`：OpenCode skill 搜索路径；harness 默认需要配置 `skills/threat-analysis-harness/value-assets`、`skills/threat-analysis-harness/high-risk-modules` 和 `skills/threat-analysis-harness/attack-trees`。
+- `serve.opencode_config.skills.paths`：OpenCode skill 搜索路径；harness 默认需要配置 `src/threat_analysis_harness/skills/value-assets`、`src/threat_analysis_harness/skills/high-risk-modules` 和 `src/threat_analysis_harness/skills/attack-trees`。
 - `model_pool`：可用模型、能力等级、权重、并发和全局并发。
 
 `TaskAgentSubmitter` 会把 harness 的业务任务字典转换成 `run_opencode_task()` 调用。业务任务类型仍保留为 `value_asset_map`、`high_risk_module_map`、`high_risk_module_merge` 和 `attack_tree_by_asset`，提交给 task_agent 时统一使用公开 API 支持的 `task_type="threat_analysis"`；默认 `required_capability="high"`。任务携带的 `output_schema` 会传给 task_agent，由 task_agent 负责 JSON 提取、同会话 JSON 修正和 schema 校验，校验后的 `result.structured` 会写入任务的 `output_path`。
 
-`TaskAgentSubmitter` 不读取或内联 `SKILL.md`。`task_agent` 会把 `serve.opencode_config` 写入 OpenCode 配置并加载其中的 `skills.paths`；适配器只根据 harness 任务的 `skill_path` 推导 skill 名称，并在 prompt 开头使用 `/skill-name` 调用已配置的 skill。
+`TaskAgentSubmitter` 不读取或内联 `SKILL.md`。`task_agent` 会把 `serve.opencode_config` 写入 OpenCode 配置并加载其中的 `skills.paths`；适配器只根据 harness 任务的 `skill_name` 在 prompt 开头使用 `/skill-name` 调用已配置的 skill。
 
 ## 命令行启动
 
-推荐使用脚本启动完整威胁分析流程：
+推荐通过包内入口启动完整威胁分析流程：
 
 ```bash
-python3 scripts/run_threat_analysis.py \
-  --config task-agent.yaml \
-  --input /path/to/repository-or-input \
-  --artifacts-root artifacts \
-  --run-id demo-run
+PYTHONPATH=src python3 -m threat_analysis_harness.main \
+  --code-path /path/to/repository-or-input \
+  --output-path artifacts/demo-run
 ```
 
-Serve 启动、复用、端口和环境变量由 `task-agent.yaml` 中的 `serve` 配置决定。
+该入口只负责解析命令行参数并调用 `run_threat_analysis()`。Serve 启动、复用、端口和环境变量仍由 task_agent 的配置决定。
 
-如果需要指定多个输入文件或目录，可以重复传入 `--input`：
-
-```bash
-python3 scripts/run_threat_analysis.py \
-  --config task-agent.yaml \
-  --input product.md \
-  --input src \
-  --input deploy
-```
-
-如果高风险模块识别需要独立 batch，可以重复传入 `--high-risk-batch`：
+如果需要透传暂未消费的产品知识 MCP 或私有攻击模式，可以传入：
 
 ```bash
-python3 scripts/run_threat_analysis.py \
-  --config task-agent.yaml \
-  --input product.md \
-  --high-risk-batch src/api src/auth \
-  --high-risk-batch src/parser src/protocol
-```
-
-如果需要继续已有 run，加上 `--resume`。未传 `--run-id` 时会自动选择 `artifacts/runs/` 下最近修改的 run；也可以显式传入同一个 `--run-id`。pipeline 会检查每个任务的 `output_path`，如果文件已存在且可解析为 JSON，就跳过该任务并复用该输出；不存在或 JSON 不可解析的任务会重新执行。由 task_agent 生成的任务输出在生成时已经完成对应 JSON schema 校验：
-
-```bash
-python3 scripts/run_threat_analysis.py \
-  --config task-agent.yaml \
-  --input product.md \
-  --run-id demo-run \
-  --resume
+PYTHONPATH=src python3 -m threat_analysis_harness.main \
+  --code-path /path/to/repository-or-input \
+  --output-path artifacts/demo-run \
+  --product-mcp product-mcp \
+  --attack-modes '{"attack_mode1": ["introduction", "skill-name"]}'
 ```
 
 常用参数：
 
-- `--config`：task_agent YAML 配置文件路径。
-- `--input`：输入文件或目录，可重复传入。
-- `--high-risk-batch`：高风险模块识别输入 batch，可重复传入。
-- `--attack-tree-context`：攻击树额外上下文文件，可重复传入。
-- `--artifacts-root` / `--run-id`：产物根目录和本次运行 ID。
-- `--timeout`：等待每批 agent 任务的超时时间。
-- `--resume`：继续已有 run；未传 `--run-id` 时使用最近修改的 run，任务输出文件已存在且可解析为 JSON 时跳过该任务。
-- `--print-progress` / `--no-print-progress`：控制是否打印 pipeline 关键步骤进度。
+- `--code-path`：代码仓路径，必填。
+- `--output-path`：落盘产物路径，必填。
+- `--resume`：复用 `--output-path` 下已有任务 JSON 输出。
+- `--product-mcp`：产品知识 MCP 名称，当前仅透传给接口。
+- `--attack-modes`：私有攻击模式 JSON 字符串，当前仅透传给接口。
 
-脚本结束后会输出本次 run ID、产物数量和最终 JSON 路径。
+命令结束后会输出 `run_threat_analysis()` 返回的 JSON。成功时包含 `value_asset_path`、`high_risk_modules_path` 和 `attack_tree_path`；失败时包含 `reason`。
 
 也可以在代码中直接组装 pipeline：
 
@@ -209,31 +184,24 @@ from threat_analysis_harness import (
     ThreatAnalysisLayout,
     ThreatAnalysisPipeline,
 )
-from threat_analysis_harness.skills import default_skill_paths
-
-skill_paths = default_skill_paths()
 layout = ThreatAnalysisLayout.for_run("artifacts", "demo-run")
 submitter = TaskAgentSubmitter(config_path="task-agent.yaml")
 
-try:
-    pipeline = ThreatAnalysisPipeline(
-        submit_tasks=submitter.submit_tasks,
-        layout=layout,
-        skill_paths=skill_paths,
-    )
-    result = pipeline.run(
-        input_files=["/path/to/repository-or-input"],
-        timeout=None,
-    )
-finally:
-    submitter.shutdown_sync()
+pipeline = ThreatAnalysisPipeline(
+    submit_tasks=submitter.submit_tasks,
+    layout=layout,
+)
+result = pipeline.run(
+    input_files=["/path/to/repository-or-input"],
+    timeout=None,
+)
 ```
 
 `ThreatAnalysisPipeline` 只依赖 `pipeline_submit_tasks(tasks, timeout=None)` 这个函数契约；如果替换 runtime，只需要在装配层传入另一个同签名函数。
 
 `tasks` 和返回值都使用普通 JSON 字典。任务 JSON 字段约定为：
 
-- 必填：`task_id`、`task_type`、`skill_path`、`runtime_prompt`、`output_path`。
+- 必填：`task_id`、`task_type`、`skill_name`、`runtime_prompt`、`output_path`。
 - 可选：`input_files`、`output_schema`、`output_schema_path`、`metadata`、`priority`。
 - 返回结果至少包含：`task_id`、`task_type`、`status`、`output_path`、`output`；失败时包含 `error`。
 
@@ -249,9 +217,9 @@ web/index.html
 
 页面可分别导入以下 JSON 产物：
 
-- `runs/<run_id>/value_assets/final/value-assets.json`
-- `runs/<run_id>/high_risk_modules/final/high-risk-module-merge.json`
-- `runs/<run_id>/attack_trees/final/attack_trees.json`
+- `<output_path>/value_assets/final/value-assets.json`
+- `<output_path>/high_risk_modules/final/high-risk-module-merge.json`
+- `<output_path>/attack_trees/final/attack_trees.json`
 
 导入后，页面会以表格展示价值资产和高风险模块，从攻击树中提取内部节点，并用根到叶的树状图展示每棵攻击树及叶子节点匹配的攻击模式标题。
 

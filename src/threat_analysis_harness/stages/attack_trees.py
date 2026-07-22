@@ -21,17 +21,16 @@ from threat_analysis_harness.stages.base import (
 
 class AttackTreeStage:
     task_type = "attack_tree_by_asset"
+    skill_name = "attack-tree-by-asset"
 
     def __init__(
         self,
         *,
         submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
-        skill_path: str | Path,
     ) -> None:
         self.submit_tasks = submit_tasks
         self.layout = layout
-        self.skill_path = str(skill_path)
 
     def build_tasks(
         self,
@@ -55,7 +54,7 @@ class AttackTreeStage:
                 {
                     "task_id": task_id,
                     "task_type": self.task_type,
-                    "skill_path": self.skill_path,
+                    "skill_name": self.skill_name,
                     "runtime_prompt": runtime_prompt
                     or _asset_prompt(
                         asset,

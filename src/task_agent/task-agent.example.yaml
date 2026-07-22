@@ -27,9 +27,9 @@ serve:
   opencode_config:
     skills:
       paths:
-        - /absolute/path/to/source/skills/threat-analysis-harness/value-assets
-        - /absolute/path/to/source/skills/threat-analysis-harness/high-risk-modules
-        - /absolute/path/to/source/skills/threat-analysis-harness/attack-trees
+        - /absolute/path/to/source/src/threat_analysis_harness/skills/value-assets
+        - /absolute/path/to/source/src/threat_analysis_harness/skills/high-risk-modules
+        - /absolute/path/to/source/src/threat_analysis_harness/skills/attack-trees
 
     mcp:
       remote-example:

@@ -47,19 +47,17 @@ HIGH_RISK_MAP_CATEGORIES: tuple[tuple[str, str, str], ...] = (
 class HighRiskModuleStage:
     map_task_type = "high_risk_module_map"
     merge_task_type = "high_risk_module_merge"
+    map_skill_name = "high-risk-module-map"
+    merge_skill_name = "high-risk-module-merge"
 
     def __init__(
         self,
         *,
         submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
-        map_skill_path: str | Path,
-        merge_skill_path: str | Path,
     ) -> None:
         self.submit_tasks = submit_tasks
         self.layout = layout
-        self.map_skill_path = str(map_skill_path)
-        self.merge_skill_path = str(merge_skill_path)
 
     def build_map_tasks(
         self,
@@ -75,7 +73,7 @@ class HighRiskModuleStage:
                     {
                         "task_id": task_id,
                         "task_type": self.map_task_type,
-                        "skill_path": self.map_skill_path,
+                        "skill_name": self.map_skill_name,
                         "runtime_prompt": runtime_prompt,
                         "input_files": [str(path) for path in input_files],
                         "output_path": str(self.layout.high_risk_raw_dir / f"{task_id}.json"),
@@ -96,7 +94,7 @@ class HighRiskModuleStage:
                     {
                         "task_id": task_id,
                         "task_type": self.map_task_type,
-                        "skill_path": self.map_skill_path,
+                        "skill_name": self.map_skill_name,
                         "runtime_prompt": _category_map_prompt(
                             input_files,
                             category_label=category_label,
@@ -127,7 +125,7 @@ class HighRiskModuleStage:
         return {
             "task_id": task_id,
             "task_type": self.merge_task_type,
-            "skill_path": self.merge_skill_path,
+            "skill_name": self.merge_skill_name,
             "runtime_prompt": runtime_prompt or _merge_prompt(candidate_files),
             "input_files": [str(path) for path in candidate_files],
             "output_path": str(self.layout.high_risk_final_dir / f"{task_id}.json"),
@@ -157,15 +155,6 @@ class HighRiskModuleStage:
         )
         merge_result = require_success(self.submit_tasks([merge_task], timeout=timeout)[0])
         return merge_result["output"]
-
-
-def _map_prompt(input_files: Sequence[str | Path]) -> str:
-    return (
-        "请根据 skill 要求分析输入文件和代码仓内容，识别高风险模块。"
-        "最终只输出符合 JSON schema 的数组。"
-        "输入文件："
-        + ", ".join(str(path) for path in input_files)
-    )
 
 
 def _category_map_prompt(

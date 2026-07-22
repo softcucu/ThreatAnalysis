@@ -3,14 +3,18 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline
+from threat_analysis_harness import (
+    ThreatAnalysisLayout,
+    ThreatAnalysisPipeline,
+    run_threat_analysis,
+)
 from threat_analysis_harness.schemas import (
     ATTACK_TREE_SCHEMA,
     HIGH_RISK_MODULES_SCHEMA,
     VALUE_ASSETS_SCHEMA,
 )
-from threat_analysis_harness.skills import default_skill_paths
 from threat_analysis_harness.stages.base import existing_success_result
 
 
@@ -174,8 +178,10 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             results = []
             for task in tasks:
                 prompt = task["runtime_prompt"]
+                self.assertNotIn("skill_path", task)
                 self.assertNotIn("不允许输出json文件，直接返回json结果", prompt)
                 if task["task_type"] == "value_asset_map":
+                    self.assertEqual(task["skill_name"], "value-asset-map")
                     self.assertIs(task["output_schema"], VALUE_ASSETS_SCHEMA)
                     category = task.get("metadata", {}).get("asset_category")
                     value_asset_categories_seen.append(category)
@@ -185,6 +191,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                     results.append(task_result(task, output))
                     continue
                 if task["task_type"] == "high_risk_module_map":
+                    self.assertEqual(task["skill_name"], "high-risk-module-map")
                     self.assertIs(task["output_schema"], HIGH_RISK_MODULES_SCHEMA)
                     category = task.get("metadata", {}).get("high_risk_category")
                     high_risk_categories_seen.append(category)
@@ -198,11 +205,13 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                     results.append(task_result(task, output))
                     continue
                 if task["task_type"] == "high_risk_module_merge":
+                    self.assertEqual(task["skill_name"], "high-risk-module-merge")
                     self.assertIs(task["output_schema"], HIGH_RISK_MODULES_SCHEMA)
                     self.assertTrue(task["input_files"])
                     results.append(task_result(task, HIGH_RISK_MODULES))
                     continue
                 if task["task_type"] == "attack_tree_by_asset":
+                    self.assertEqual(task["skill_name"], "attack-tree-by-asset")
                     self.assertIs(task["output_schema"], ATTACK_TREE_SCHEMA)
                     task_input = next(
                         path for path in task["input_files"] if path.endswith(".input.json")
@@ -230,7 +239,6 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             pipeline = ThreatAnalysisPipeline(
                 submit_tasks=submit_tasks,
                 layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
-                skill_paths=default_skill_paths(ROOT),
                 progress_reporter=progress,
             )
             result = pipeline.run(input_files=[INPUT], timeout=5)
@@ -320,14 +328,12 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             pipeline = ThreatAnalysisPipeline(
                 submit_tasks=submit_tasks,
                 layout=layout,
-                skill_paths=default_skill_paths(ROOT),
             )
             pipeline.run(input_files=[INPUT], timeout=5)
 
             pipeline = ThreatAnalysisPipeline(
                 submit_tasks=fail_if_called,
                 layout=layout,
-                skill_paths=default_skill_paths(ROOT),
                 progress_reporter=progress,
             )
             result = pipeline.run(input_files=[INPUT], timeout=5, resume=True)
@@ -348,7 +354,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             task = {
                 "task_id": "schema-not-checked",
                 "task_type": "unit",
-                "skill_path": str(ROOT / "tests" / "fixtures" / "skills" / "example-skill"),
+                "skill_name": "example-skill",
                 "runtime_prompt": "Produce output.",
                 "output_path": str(output_path),
                 "output_schema": {"type": "object"},
@@ -358,6 +364,136 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["output"], [])
+
+    def test_run_threat_analysis_api_returns_output_paths(self):
+        class FakeSubmitter:
+            def submit_tasks(self, tasks, *, timeout=None):
+                results = []
+                for task in tasks:
+                    if task["task_type"] == "value_asset_map":
+                        output = (
+                            VALUE_ASSETS
+                            if task.get("metadata", {}).get("asset_category") == "数据资产"
+                            else []
+                        )
+                        results.append(task_result(task, output))
+                        continue
+                    if task["task_type"] == "high_risk_module_map":
+                        output = (
+                            HIGH_RISK_MODULES
+                            if task.get("metadata", {}).get("high_risk_category")
+                            == "不可信来源数据解析或处理代码"
+                            else []
+                        )
+                        results.append(task_result(task, output))
+                        continue
+                    if task["task_type"] == "high_risk_module_merge":
+                        results.append(task_result(task, HIGH_RISK_MODULES))
+                        continue
+                    if task["task_type"] == "attack_tree_by_asset":
+                        results.append(task_result(task, attack_tree_output()))
+                        continue
+                    raise AssertionError(task["task_type"])
+                return results
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "artifacts"
+            with patch(
+                "threat_analysis_harness.threat_analysis.TaskAgentSubmitter",
+                return_value=FakeSubmitter(),
+            ):
+                result = run_threat_analysis(
+                    code_path=INPUT,
+                    output_path=output_root,
+                    product_mcp="product-mcp",
+                    attack_modes={"mode": ["intro", "skill-name"]},
+                )
+
+            self.assertIs(result["result"], True)
+            self.assertEqual(
+                result["value_asset_path"],
+                str(output_root / "value_assets" / "final" / "value-assets.json"),
+            )
+            self.assertEqual(
+                result["attack_tree_path"],
+                str(output_root / "attack_trees" / "final" / "attack_trees.json"),
+            )
+            self.assertEqual(
+                result["high_risk_modules_path"],
+                str(
+                    output_root
+                    / "high_risk_modules"
+                    / "final"
+                    / "high-risk-module-merge.json"
+                ),
+            )
+            self.assertTrue(Path(result["value_asset_path"]).exists())
+            self.assertTrue(Path(result["attack_tree_path"]).exists())
+            self.assertTrue(Path(result["high_risk_modules_path"]).exists())
+
+    def test_run_threat_analysis_api_resume_reuses_existing_outputs(self):
+        class FakeSubmitter:
+            def submit_tasks(self, tasks, *, timeout=None):
+                results = []
+                for task in tasks:
+                    if task["task_type"] == "value_asset_map":
+                        output = (
+                            VALUE_ASSETS
+                            if task.get("metadata", {}).get("asset_category") == "数据资产"
+                            else []
+                        )
+                        results.append(task_result(task, output))
+                        continue
+                    if task["task_type"] == "high_risk_module_map":
+                        output = (
+                            HIGH_RISK_MODULES
+                            if task.get("metadata", {}).get("high_risk_category")
+                            == "不可信来源数据解析或处理代码"
+                            else []
+                        )
+                        results.append(task_result(task, output))
+                        continue
+                    if task["task_type"] == "high_risk_module_merge":
+                        results.append(task_result(task, HIGH_RISK_MODULES))
+                        continue
+                    if task["task_type"] == "attack_tree_by_asset":
+                        results.append(task_result(task, attack_tree_output()))
+                        continue
+                    raise AssertionError(task["task_type"])
+                return results
+
+        class FailSubmitter:
+            def submit_tasks(self, tasks, *, timeout=None):
+                raise AssertionError("resume should skip existing outputs")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "artifacts"
+            with patch(
+                "threat_analysis_harness.threat_analysis.TaskAgentSubmitter",
+                side_effect=[FakeSubmitter(), FailSubmitter()],
+            ):
+                first = run_threat_analysis(
+                    code_path=INPUT,
+                    output_path=output_root,
+                )
+                second = run_threat_analysis(
+                    code_path=INPUT,
+                    output_path=output_root,
+                    is_resume=True,
+                )
+
+        self.assertIs(first["result"], True)
+        self.assertIs(second["result"], True)
+
+    def test_run_threat_analysis_api_returns_reason_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_threat_analysis(
+                code_path="",
+                output_path=Path(tmp) / "artifacts",
+            )
+
+        self.assertIs(result["result"], False)
+        self.assertIn("code_path is required", result["reason"])
 
 
 if __name__ == "__main__":

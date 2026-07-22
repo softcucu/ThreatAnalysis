@@ -64,18 +64,6 @@ class TaskAgentSubmitter:
             return await batch
         return await asyncio.wait_for(batch, timeout=timeout)
 
-    async def shutdown(self) -> None:
-        """Stop the task_agent-managed Serve process."""
-
-        from task_agent import shutdown_opencode
-
-        await shutdown_opencode()
-
-    def shutdown_sync(self) -> None:
-        """Synchronous wrapper for CLI callers."""
-
-        _run_sync(self.shutdown())
-
     async def _run_one_task(self, task: TaskJson) -> TaskResultJson:
         started_at = time.time()
         output_path = Path(str(task["output_path"]))
@@ -218,7 +206,7 @@ def build_task_agent_prompt(task: Mapping[str, Any]) -> str:
     """Invoke the OpenCode skill configured in task_agent and pass the task prompt."""
 
     runtime_prompt = str(task.get("runtime_prompt") or "").strip()
-    skill_name = _skill_name_from_path(task["skill_path"])
+    skill_name = _task_skill_name(task)
     if not runtime_prompt:
         return f"/{skill_name}"
     return f"/{skill_name}\n\n{runtime_prompt}"
@@ -238,21 +226,11 @@ def _run_sync(awaitable: Awaitable[Any]) -> Any:
     )
 
 
-def _skill_name_from_path(skill_path: str | PathLike[str]) -> str:
-    raw = str(skill_path or "").strip()
+def _task_skill_name(task: Mapping[str, Any]) -> str:
+    raw = str(task.get("skill_name") or "").strip()
     if not raw:
-        raise ValueError("task skill_path is required")
-    path = Path(raw).expanduser()
-    if path.name == "SKILL.md":
-        name = path.parent.name
-    elif path.suffix.lower() in {".md", ".markdown", ".txt"}:
-        name = path.stem
-    else:
-        name = path.name
-    name = name.strip()
-    if not name:
-        raise ValueError(f"Cannot derive skill name from skill_path: {skill_path!r}")
-    return name
+        raise ValueError("task skill_name is required")
+    return raw
 
 
 def _task_output_schema(task: Mapping[str, Any]) -> dict[str, Any] | None:

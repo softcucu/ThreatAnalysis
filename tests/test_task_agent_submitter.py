@@ -79,15 +79,10 @@ class TaskAgentSubmitterTests(unittest.TestCase):
 
 def _task(tmp: str, **extra):
     root = Path(tmp)
-    skill_dir = root / "unit-skill"
-    references_dir = skill_dir / "references"
-    references_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# Unit Skill\n\nSkill body\n", encoding="utf-8")
-    (references_dir / "ref.txt").write_text("reference body\n", encoding="utf-8")
     task = {
         "task_id": "unit-task",
         "task_type": "value_asset_map",
-        "skill_path": str(skill_dir),
+        "skill_name": "unit-skill",
         "runtime_prompt": "Runtime prompt",
         "input_files": [str(root / "input.md")],
         "output_path": str(root / "out.json"),

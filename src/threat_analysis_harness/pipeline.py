@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
-from threat_analysis_harness.skills import ThreatAnalysisSkillPaths, default_skill_paths
 from threat_analysis_harness.stages.attack_trees import AttackTreeStage
 from threat_analysis_harness.stages.base import (
     ProgressReporter,
@@ -37,28 +36,22 @@ class ThreatAnalysisPipeline:
         *,
         submit_tasks: SubmitTasks,
         layout: ThreatAnalysisLayout,
-        skill_paths: ThreatAnalysisSkillPaths | None = None,
         progress_reporter: ProgressReporter | None = None,
     ) -> None:
         self.submit_tasks = submit_tasks
         self.layout = layout
-        self.skill_paths = skill_paths or default_skill_paths()
         self.progress_reporter = progress_reporter
         self.value_assets = ValueAssetStage(
             submit_tasks=submit_tasks,
             layout=layout,
-            skill_path=self.skill_paths.value_asset_map,
         )
         self.high_risk_modules = HighRiskModuleStage(
             submit_tasks=submit_tasks,
             layout=layout,
-            map_skill_path=self.skill_paths.high_risk_module_map,
-            merge_skill_path=self.skill_paths.high_risk_module_merge,
         )
         self.attack_trees = AttackTreeStage(
             submit_tasks=submit_tasks,
             layout=layout,
-            skill_path=self.skill_paths.attack_tree_by_asset,
         )
 
     def run(

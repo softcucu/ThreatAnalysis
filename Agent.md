@@ -20,8 +20,8 @@ ThreatAnalysis 是一个威胁分析 AI Agent 编排框架。它读取代码仓�
 - `src/threat_analysis_harness/task_agent_submitter.py`：harness 到新 `task_agent` 公开接口的同步提交适配器。
 - `src/task_agent/`：新的 OpenCode/nga Serve 任务框架，负责模型池、队列、会话、重试、事件流和 JSON schema 校验。
 - `src/agent_runtime/`：旧通用 Agent 运行时，当前保留兼容代码和测试。
-- `skills/threat-analysis-harness/`：opencode 运行时使用的 skill 提示词和引用资料。
-- `scripts/run_threat_analysis.py`：命令行入口，通过 task_agent 启动或复用 Serve 并运行完整流水线。
+- `src/threat_analysis_harness/skills/`：opencode 运行时使用的 skill 提示词和引用资料。
+- `src/threat_analysis_harness/main.py`：命令行入口，解析参数后调用 `run_threat_analysis()`。
 - `web/`：静态产物查看页，可直接打开 `web/index.html` 导入最终 JSON。
 - `tests/`：标准库 `unittest` 测试和 fixture。
 - `origin/`：原始需求、分析方法或参考资料，修改业务规则前应先查看这里。
@@ -37,11 +37,9 @@ cp src/task_agent/task-agent.example.yaml task-agent.yaml
 运行完整威胁分析：
 
 ```bash
-python3 scripts/run_threat_analysis.py \
-  --config task-agent.yaml \
-  --input /path/to/repository-or-input \
-  --artifacts-root artifacts \
-  --run-id demo-run
+PYTHONPATH=src python3 -m threat_analysis_harness.main \
+  --code-path /path/to/repository-or-input \
+  --output-path artifacts/demo-run
 ```
 
 Serve 启动、复用、端口、环境变量、OpenCode 原生配置和模型池由 `task-agent.yaml` 控制。harness 运行所需 skill 路径应配置在 `serve.opencode_config.skills.paths`。
@@ -63,7 +61,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 一次完整运行的主要产物目录格式为：
 
 ```text
-<artifacts-root>/runs/<run-id>/
+<output-path>/
   task_inputs/
   value_assets/
     raw/
@@ -78,7 +76,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 价值资产阶段会按四类资产并发拆分任务：数据资产、软件资产、硬件资产、服务资产。程序会过滤类别不符的结果，并按“资产类别 + 规范化资产名”合并去重。
 
-高风险模块阶段会按五类高风险特征拆分 map 任务，并通过单独的 merge 任务合并候选模块。若传入多个 `--high-risk-batch`，每个 batch 都会拆成五类任务。
+高风险模块阶段会按五类高风险特征拆分 map 任务，并通过单独的 merge 任务合并候选模块。
 
 攻击树阶段会按最终价值资产逐个启动任务。每个攻击树任务只分析一个价值资产，但会收到完整最终高风险模块列表。合并攻击树前会执行一致性对齐：价值资产名称、根节点、高风险模块名、叶子节点和 `related_high_risk_modules` 都必须能和最终产物关联。
 
@@ -87,7 +85,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - Agent 任务会携带 `src/threat_analysis_harness/schemas.py` 中对应业务 schema；JSON 提取、schema 校验、同会话修正和规范化写入由 `task_agent` 与 `TaskAgentSubmitter` 协作完成。
 - `task_agent.run_opencode_task()` 会在传入 `output_schema` 时追加 JSON 输出约束；业务 harness 不直接拼接 runtime 指令。
 - `TaskAgentSubmitter` 不读取或内联 `SKILL.md`；skill 由 `task-agent.yaml` 的 `serve.opencode_config.skills.paths` 提供，适配器只在 prompt 中使用 `/skill-name` 调用。
-- 命令行 `--resume` 未传 `--run-id` 时会选择 `artifacts/runs/` 下最近修改的 run，并按每个任务的 `output_path` 判断是否可跳过；文件存在且可解析为 JSON 时复用该输出，否则重新执行任务。
+- 包内命令行入口只调用 `run_threat_analysis()`；第三方接口当前接收单个 `code_path` 和 `output_path`，通过 `is_resume=True` 或命令行 `--resume` 复用同一 `output_path` 下已有任务 JSON 输出。
 - harness 业务 `task_type` 保持原值；提交给 task_agent 时默认映射为公开 API 支持的 `task_type="threat_analysis"`。
 - 模型选择、能力等级和并发由 `task-agent.yaml` 的 `model_pool` 控制。
 - 不要让业务阶段直接依赖某个具体模型；模型选择应保留在 task_agent 配置和 submitter 装配层。

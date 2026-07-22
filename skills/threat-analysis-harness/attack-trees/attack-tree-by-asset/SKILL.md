@@ -449,14 +449,6 @@ description: 基于价值资产、高风险模块、代码库和本 skill 内置
         }
       ]
     }
-  ],
-  "analysis_gaps": [
-    {
-      "gap_id": "GAP-001",
-      "gap_type": "无法确认外部暴露面|无法识别内部模块|无法确认模块关系|无法关联价值资产|无法匹配攻击模式",
-      "object_name": "相关资产、模块、路径或攻击模式名称",
-      "description": "因输入文档、attack_mode.json 或代码信息不足而无法确认的内容"
-    }
   ]
 }
 ```
@@ -541,7 +533,6 @@ description: 基于价值资产、高风险模块、代码库和本 skill 内置
 如果一条路径无法匹配任何攻击模式：
 
 - `attack_patterns` 输出空数组
-- 在 `analysis_gaps` 中增加 `gap_type` 为 `无法匹配攻击模式` 的记录
 
 ### 7.3 JSON 字段约束
 
@@ -549,8 +540,7 @@ description: 基于价值资产、高风险模块、代码库和本 skill 内置
 - `nodes`：该攻击树使用的全部节点
 - `edges`：该攻击树中的全部模块影响关系
 - `attack_paths`：从叶子节点到根节点的完整理论影响路径
-- `analysis_gaps`：记录无法确认或无法匹配的内容
-- 每个 `node_id`、`edge_id`、`path_id` 和 `gap_id` 必须唯一
+- 每个 `node_id`、`edge_id` 和 `path_id` 必须唯一
 - 根节点的 `module_name` 必须为 `null`
 - 根节点的 `is_high_risk_module` 必须为 `false`
 - 叶子节点的 `is_high_risk_module` 和 `external_exposure` 必须为 `true`
@@ -565,7 +555,6 @@ description: 基于价值资产、高风险模块、代码库和本 skill 内置
 - `related_high_risk_modules` 必须覆盖路径中所有 `is_high_risk_module` 为 `true` 的节点
 - `attack_patterns` 中的攻击模式必须来自 `references/attack_mode.json`
 - 不得输出任何节点逻辑关系字段
-- 没有分析缺口时，`analysis_gaps` 输出空数组
 - 不得输出注释
 - 不得输出未定义字段
 - 不得在 JSON 外输出任何文字
@@ -590,6 +579,6 @@ description: 基于价值资产、高风险模块、代码库和本 skill 内置
 - 普通内部节点可以是代码库中新识别的内部模块，不要求出现在高风险模块列表中；只有被标记为`is_high_risk_module: true`、作为叶子节点或出现在`related_high_risk_modules`中的模块，才必须来自高风险模块输入列表
 - 模块之间的关系必须能够由输入文档、代码调用、数据流、控制关系、依赖关系或系统架构支撑
 - 不分析、不判断、不标记任何节点逻辑关系
-- 输入文档、`references/attack_mode.json` 或代码信息不足时必须记录到 `analysis_gaps`
+- 输入文档、`references/attack_mode.json` 或代码信息不足时，不得虚构无法支撑的路径、模块关系或攻击模式
 - 输出必须是合法 JSON
 - 输出不得包含 Markdown、Mermaid 或 JSON 之外的其他内容

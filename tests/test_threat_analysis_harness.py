@@ -135,7 +135,6 @@ def attack_tree_output(
                 ],
             }
         ],
-        "analysis_gaps": [],
     }
 
 

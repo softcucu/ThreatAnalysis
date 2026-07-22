@@ -141,13 +141,10 @@ def normalize_attack_tree_output(
 
 def combine_attack_tree_outputs(outputs: Sequence[dict[str, Any]]) -> dict[str, Any]:
     attack_trees: list[dict[str, Any]] = []
-    analysis_gaps: list[dict[str, Any]] = []
     for output in outputs:
         attack_trees.extend(output.get("attack_trees", []))
-        analysis_gaps.extend(output.get("analysis_gaps", []))
     return {
         "attack_trees": attack_trees,
-        "analysis_gaps": analysis_gaps,
     }
 
 

@@ -12,7 +12,6 @@ const state = {
   highRiskModules: [],
   attackTrees: {
     attack_trees: [],
-    analysis_gaps: [],
   },
 };
 
@@ -466,12 +465,10 @@ function normalizeAttackTreePayload(data) {
   if (Array.isArray(data)) {
     return {
       attack_trees: data,
-      analysis_gaps: [],
     };
   }
   return {
     attack_trees: Array.isArray(data?.attack_trees) ? data.attack_trees : [],
-    analysis_gaps: Array.isArray(data?.analysis_gaps) ? data.analysis_gaps : [],
   };
 }
 

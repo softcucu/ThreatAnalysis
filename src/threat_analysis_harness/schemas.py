@@ -110,7 +110,7 @@ RELATED_HIGH_RISK_MODULE_SCHEMA: dict[str, Any] = {
 
 ATTACK_TREE_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["attack_trees", "analysis_gaps"],
+    "required": ["attack_trees"],
     "properties": {
         "attack_trees": {
             "type": "array",
@@ -223,29 +223,6 @@ ATTACK_TREE_SCHEMA: dict[str, Any] = {
                             "additionalProperties": False,
                         },
                     },
-                },
-                "additionalProperties": False,
-            },
-        },
-        "analysis_gaps": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["gap_id", "gap_type", "object_name", "description"],
-                "properties": {
-                    "gap_id": NON_EMPTY_STRING,
-                    "gap_type": {
-                        "type": "string",
-                        "enum": [
-                            "无法确认外部暴露面",
-                            "无法识别内部模块",
-                            "无法确认模块关系",
-                            "无法关联价值资产",
-                            "无法匹配攻击模式",
-                        ],
-                    },
-                    "object_name": {"type": "string"},
-                    "description": NON_EMPTY_STRING,
                 },
                 "additionalProperties": False,
             },

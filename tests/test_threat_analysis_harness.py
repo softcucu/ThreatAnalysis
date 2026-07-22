@@ -2,45 +2,20 @@ import io
 import json
 import tempfile
 import unittest
-from functools import partial
 from pathlib import Path
 
-from agent_runtime import (
-    AgentScheduler,
-    FunctionAgentRunner,
-    ModelRouter,
-    ProgressPrinter,
-    RuntimeConfig,
-    submit_tasks as submit_agent_tasks,
-)
-from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
 from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline
+from threat_analysis_harness.schemas import (
+    ATTACK_TREE_SCHEMA,
+    HIGH_RISK_MODULES_SCHEMA,
+    VALUE_ASSETS_SCHEMA,
+)
 from threat_analysis_harness.skills import default_skill_paths
+from threat_analysis_harness.stages.base import existing_success_result
 
 
 ROOT = Path(__file__).resolve().parent.parent
 INPUT = ROOT / "tests" / "fixtures" / "inputs" / "input.json"
-
-
-def runtime_router():
-    return ModelRouter(
-        RuntimeConfig.from_dict(
-            {
-                "models": {
-                    "value_asset_map": "test-value-model",
-                    "high_risk_module_map": "test-high-risk-model",
-                    "high_risk_module_merge": "test-merge-model",
-                    "attack_tree_by_asset": "test-attack-tree-model",
-                },
-                "concurrency": {
-                    "global": 3,
-                    "by_task_type": {
-                        "high_risk_module_merge": 1,
-                    },
-                },
-            }
-        )
-    )
 
 
 VALUE_ASSETS = [
@@ -164,63 +139,102 @@ def attack_tree_output(
     }
 
 
+class ProgressRecorder:
+    def __init__(self, stream: io.StringIO):
+        self.stream = stream
+
+    def emit(self, message: str) -> None:
+        self.stream.write(message + "\n")
+
+
+def task_result(task, output):
+    output_path = Path(task["output_path"])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(output, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "task_id": task["task_id"],
+        "task_type": task["task_type"],
+        "status": "succeeded",
+        "output_path": task["output_path"],
+        "returncode": 0,
+        "output": output,
+        "metadata": dict(task.get("metadata", {})),
+    }
+
+
 class ThreatAnalysisPipelineTests(unittest.TestCase):
-    def test_pipeline_runs_all_stages_and_returns_validated_outputs(self):
+    def test_pipeline_runs_all_stages_with_runtime_contract(self):
         value_asset_categories_seen = []
         high_risk_categories_seen = []
 
-        def run(task, model_config, prompt):
-            self.assertIn(JSON_RESULT_INSTRUCTION, prompt)
-            if task.task_type == "value_asset_map":
-                category = task.metadata.get("asset_category")
-                value_asset_categories_seen.append(category)
-                self.assertIn("当前只识别", prompt)
-                self.assertIn(f"必须全部为“{category}”", prompt)
-                if category == "数据资产":
-                    return json.dumps(VALUE_ASSETS, ensure_ascii=False)
-                return "[]"
-            if task.task_type == "high_risk_module_map":
-                category = task.metadata.get("high_risk_category")
-                high_risk_categories_seen.append(category)
-                self.assertIn("当前只识别命中", prompt)
-                self.assertIn(str(task.metadata.get("high_risk_field")), prompt)
-                if category == "不可信来源数据解析或处理代码":
-                    return json.dumps(HIGH_RISK_MODULES, ensure_ascii=False)
-                return "[]"
-            if task.task_type == "high_risk_module_merge":
-                self.assertTrue(task.input_files)
-                return json.dumps(HIGH_RISK_MODULES, ensure_ascii=False)
-            if task.task_type == "attack_tree_by_asset":
-                task_input = next(path for path in task.input_files if path.endswith(".input.json"))
-                self.assertIn(task_input, prompt)
-                self.assertIn("high_risk_modules 是全部最终高风险模块列表", prompt)
-                task_input_payload = json.loads(Path(task_input).read_text(encoding="utf-8"))
-                self.assertEqual(task_input_payload["high_risk_modules"], HIGH_RISK_MODULES)
-                return json.dumps(
-                    attack_tree_output(
-                        asset_name="用户资料数据",
-                        high_risk_module_name=" 用户认证模块 ",
-                    ),
-                    ensure_ascii=False,
-                )
-            raise AssertionError(task.task_type)
+        def submit_tasks(tasks, *, timeout=None):
+            self.assertEqual(timeout, 5)
+            results = []
+            for task in tasks:
+                prompt = task["runtime_prompt"]
+                self.assertNotIn("不允许输出json文件，直接返回json结果", prompt)
+                if task["task_type"] == "value_asset_map":
+                    self.assertIs(task["output_schema"], VALUE_ASSETS_SCHEMA)
+                    category = task.get("metadata", {}).get("asset_category")
+                    value_asset_categories_seen.append(category)
+                    self.assertIn("当前只识别", prompt)
+                    self.assertIn(f"必须全部为“{category}”", prompt)
+                    output = VALUE_ASSETS if category == "数据资产" else []
+                    results.append(task_result(task, output))
+                    continue
+                if task["task_type"] == "high_risk_module_map":
+                    self.assertIs(task["output_schema"], HIGH_RISK_MODULES_SCHEMA)
+                    category = task.get("metadata", {}).get("high_risk_category")
+                    high_risk_categories_seen.append(category)
+                    self.assertIn("当前只识别命中", prompt)
+                    self.assertIn(str(task.get("metadata", {}).get("high_risk_field")), prompt)
+                    output = (
+                        HIGH_RISK_MODULES
+                        if category == "不可信来源数据解析或处理代码"
+                        else []
+                    )
+                    results.append(task_result(task, output))
+                    continue
+                if task["task_type"] == "high_risk_module_merge":
+                    self.assertIs(task["output_schema"], HIGH_RISK_MODULES_SCHEMA)
+                    self.assertTrue(task["input_files"])
+                    results.append(task_result(task, HIGH_RISK_MODULES))
+                    continue
+                if task["task_type"] == "attack_tree_by_asset":
+                    self.assertIs(task["output_schema"], ATTACK_TREE_SCHEMA)
+                    task_input = next(
+                        path for path in task["input_files"] if path.endswith(".input.json")
+                    )
+                    self.assertIn(task_input, prompt)
+                    self.assertIn("high_risk_modules 是全部最终高风险模块列表", prompt)
+                    task_input_payload = json.loads(Path(task_input).read_text(encoding="utf-8"))
+                    self.assertEqual(task_input_payload["high_risk_modules"], HIGH_RISK_MODULES)
+                    results.append(
+                        task_result(
+                            task,
+                            attack_tree_output(
+                                asset_name="用户资料数据",
+                                high_risk_module_name=" 用户认证模块 ",
+                            ),
+                        )
+                    )
+                    continue
+                raise AssertionError(task["task_type"])
+            return results
 
         progress_stream = io.StringIO()
-        progress = ProgressPrinter(enabled=True, stream=progress_stream)
+        progress = ProgressRecorder(progress_stream)
         with tempfile.TemporaryDirectory() as tmp:
-            scheduler = AgentScheduler(
-                runner=FunctionAgentRunner(run),
-                model_router=runtime_router(),
+            pipeline = ThreatAnalysisPipeline(
+                submit_tasks=submit_tasks,
+                layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
+                skill_paths=default_skill_paths(ROOT),
                 progress_reporter=progress,
             )
-            with scheduler:
-                pipeline = ThreatAnalysisPipeline(
-                    submit_tasks=partial(submit_agent_tasks, scheduler),
-                    layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
-                    skill_paths=default_skill_paths(ROOT),
-                    progress_reporter=progress,
-                )
-                result = pipeline.run(input_files=[INPUT], timeout=5)
+            result = pipeline.run(input_files=[INPUT], timeout=5)
 
             self.assertCountEqual(
                 value_asset_categories_seen,
@@ -265,54 +279,59 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             self.assertIn("pipeline completed: duration=", progress_text)
 
     def test_pipeline_resume_skips_existing_task_outputs(self):
-        def run(task, model_config, prompt):
-            if task.task_type == "value_asset_map":
-                if task.metadata.get("asset_category") == "数据资产":
-                    return json.dumps(VALUE_ASSETS, ensure_ascii=False)
-                return "[]"
-            if task.task_type == "high_risk_module_map":
-                if task.metadata.get("high_risk_category") == "不可信来源数据解析或处理代码":
-                    return json.dumps(HIGH_RISK_MODULES, ensure_ascii=False)
-                return "[]"
-            if task.task_type == "high_risk_module_merge":
-                return json.dumps(HIGH_RISK_MODULES, ensure_ascii=False)
-            if task.task_type == "attack_tree_by_asset":
-                return json.dumps(attack_tree_output(), ensure_ascii=False)
-            raise AssertionError(task.task_type)
+        def submit_tasks(tasks, *, timeout=None):
+            results = []
+            for task in tasks:
+                if task["task_type"] == "value_asset_map":
+                    output = (
+                        VALUE_ASSETS
+                        if task.get("metadata", {}).get("asset_category") == "数据资产"
+                        else []
+                    )
+                    results.append(task_result(task, output))
+                    continue
+                if task["task_type"] == "high_risk_module_map":
+                    output = (
+                        HIGH_RISK_MODULES
+                        if task.get("metadata", {}).get("high_risk_category")
+                        == "不可信来源数据解析或处理代码"
+                        else []
+                    )
+                    results.append(task_result(task, output))
+                    continue
+                if task["task_type"] == "high_risk_module_merge":
+                    results.append(task_result(task, HIGH_RISK_MODULES))
+                    continue
+                if task["task_type"] == "attack_tree_by_asset":
+                    results.append(task_result(task, attack_tree_output()))
+                    continue
+                raise AssertionError(task["task_type"])
+            return results
 
         unexpected_calls = []
 
-        def fail_if_called(task, model_config, prompt):
-            unexpected_calls.append(task.task_id)
-            raise AssertionError(f"resume should skip task: {task.task_id}")
+        def fail_if_called(tasks, *, timeout=None):
+            unexpected_calls.extend(task["task_id"] for task in tasks)
+            raise AssertionError(f"resume should skip tasks: {unexpected_calls}")
 
         progress_stream = io.StringIO()
-        progress = ProgressPrinter(enabled=True, stream=progress_stream)
+        progress = ProgressRecorder(progress_stream)
         with tempfile.TemporaryDirectory() as tmp:
             layout = ThreatAnalysisLayout.for_run(tmp, "run-001")
-            with AgentScheduler(
-                runner=FunctionAgentRunner(run),
-                model_router=runtime_router(),
-            ) as scheduler:
-                pipeline = ThreatAnalysisPipeline(
-                    submit_tasks=partial(submit_agent_tasks, scheduler),
-                    layout=layout,
-                    skill_paths=default_skill_paths(ROOT),
-                )
-                pipeline.run(input_files=[INPUT], timeout=5)
+            pipeline = ThreatAnalysisPipeline(
+                submit_tasks=submit_tasks,
+                layout=layout,
+                skill_paths=default_skill_paths(ROOT),
+            )
+            pipeline.run(input_files=[INPUT], timeout=5)
 
-            with AgentScheduler(
-                runner=FunctionAgentRunner(fail_if_called),
-                model_router=runtime_router(),
+            pipeline = ThreatAnalysisPipeline(
+                submit_tasks=fail_if_called,
+                layout=layout,
+                skill_paths=default_skill_paths(ROOT),
                 progress_reporter=progress,
-            ) as scheduler:
-                pipeline = ThreatAnalysisPipeline(
-                    submit_tasks=partial(submit_agent_tasks, scheduler),
-                    layout=layout,
-                    skill_paths=default_skill_paths(ROOT),
-                    progress_reporter=progress,
-                )
-                result = pipeline.run(input_files=[INPUT], timeout=5, resume=True)
+            )
+            result = pipeline.run(input_files=[INPUT], timeout=5, resume=True)
 
         self.assertEqual(unexpected_calls, [])
         self.assertEqual(result.value_assets, VALUE_ASSETS)
@@ -322,6 +341,24 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
         self.assertIn("task resumed: task_id=value-asset-map-data", progress_text)
         self.assertIn("task resumed: task_id=high-risk-module-merge", progress_text)
         self.assertIn("task resumed: task_id=attack-tree-by-asset-001", progress_text)
+
+    def test_resume_reads_existing_json_without_schema_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "output.json"
+            output_path.write_text("[]\n", encoding="utf-8")
+            task = {
+                "task_id": "schema-not-checked",
+                "task_type": "unit",
+                "skill_path": str(ROOT / "tests" / "fixtures" / "skills" / "example-skill"),
+                "runtime_prompt": "Produce output.",
+                "output_path": str(output_path),
+                "output_schema": {"type": "object"},
+            }
+
+            result = existing_success_result(task)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["output"], [])
 
 
 if __name__ == "__main__":

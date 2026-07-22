@@ -7,13 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_runtime import SubmitTasks
-
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.skills import ThreatAnalysisSkillPaths, default_skill_paths
 from threat_analysis_harness.stages.attack_trees import AttackTreeStage
 from threat_analysis_harness.stages.base import (
     ProgressReporter,
+    SubmitTasks,
     completed_results,
     fill_pending_results,
     require_all_success,
@@ -113,7 +112,10 @@ class ThreatAnalysisPipeline:
         self._progress(f"value asset map completed: tasks={len(value_results)}")
         value_assets = self.value_assets.merge_category_outputs(
             [
-                (str(result.metadata.get("asset_category", "")), result.output or [])
+                (
+                    str(result.get("metadata", {}).get("asset_category", "")),
+                    result.get("output") or [],
+                )
                 for result in value_results
             ]
         )
@@ -125,7 +127,7 @@ class ThreatAnalysisPipeline:
         )
         high_risk_map_results = require_all_success(completed_results(high_risk_map_results))
         self._progress(f"high-risk module map completed: tasks={len(high_risk_map_results)}")
-        candidate_files = [result.output_path for result in high_risk_map_results]
+        candidate_files = [result["output_path"] for result in high_risk_map_results]
         self._progress("high-risk module merge started: tasks=1")
         merge_task = self.high_risk_modules.build_merge_task(candidate_files=candidate_files)
         high_risk_modules = require_success(
@@ -136,7 +138,7 @@ class ThreatAnalysisPipeline:
                 timeout=timeout,
                 progress_reporter=self.progress_reporter,
             )
-        ).output
+        )["output"]
         self._progress(f"high-risk module merge completed: modules={len(high_risk_modules)}")
 
         self._progress(f"attack tree analysis started: assets={len(value_assets)}")

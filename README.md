@@ -22,7 +22,7 @@
 - 硬件资产
 - 服务资产
 
-每个任务的 runtime prompt 只允许识别当前类别，例如“当前只识别数据类价值资产”，并要求“不允许输出json文件，直接返回json结果”。任务输出必须符合价值资产 JSON schema。
+每个任务的 runtime prompt 只允许识别当前类别，例如“当前只识别数据类价值资产”。任务会携带价值资产 JSON schema，JSON 提取和 schema 校验由 agent runtime 执行。
 
 四类任务完成后，程序会合并结果：
 
@@ -118,103 +118,30 @@ runs/<run_id>/attack_trees/final/attack_trees.json
 - `src/threat_analysis_harness/stages/value_assets.py`：价值资产分类识别和程序合并。
 - `src/threat_analysis_harness/stages/high_risk_modules.py`：高风险模块分类 map 和 merge 任务构造。
 - `src/threat_analysis_harness/stages/attack_trees.py`：按资产生成攻击树任务、合并攻击树输出和产物一致性对齐。
-- `src/agent_runtime/runner.py`：agent runner 实现，包括函数 runner、外部命令 runner 和 opencode server runner。
+- `src/threat_analysis_harness/task_agent_submitter.py`：harness 到 `task_agent.run_opencode_task()` 的同步提交适配器。
+- `src/task_agent/`：新的 OpenCode/nga Serve 任务框架，负责模型池、队列、会话、重试和 JSON schema 校验。
 - `skills/threat-analysis-harness/`：各阶段 agent 使用的 skill 提示词。
 - `web/index.html`：威胁分析产物查看页，提供价值资产、高风险模块、内部节点和攻击树四个页签。
 
 ## 模型与 opencode 运行方式
 
-模型按 `task_type` 配置，但并发主要按模型资源池限制。可以复制示例配置：
+当前 CLI 通过 `src/task_agent` 的公开接口 `run_opencode_task()` 执行模型任务。复制新的 YAML 示例并按实际环境调整：
 
 ```bash
-cp agent-runtime.example.json agent-runtime.json
+cp src/task_agent/task-agent.example.yaml task-agent.yaml
 ```
 
-配置格式：
+关键配置：
 
-```json
-{
-  "models": {
-    "value_asset_map": [
-      {
-        "model": "openai/gpt-5-mini",
-        "resource": "fast-model-pool"
-      },
-      {
-        "model": "anthropic/claude-sonnet-4",
-        "resource": "backup-model-pool"
-      }
-    ],
-    "high_risk_module_map": {
-      "model": "openai/gpt-5-mini",
-      "resource": "fast-model-pool"
-    },
-    "high_risk_module_merge": {
-      "model": "openai/gpt-5",
-      "resource": "reasoning-model-pool"
-    },
-    "attack_tree_by_asset": [
-      {
-        "model": "openai/gpt-5",
-        "resource": "reasoning-model-pool"
-      },
-      {
-        "model": "anthropic/claude-opus-4",
-        "resource": "reasoning-model-pool"
-      }
-    ]
-  },
-  "model_resources": {
-    "fast-model-pool": {
-      "concurrency": 4
-    },
-    "backup-model-pool": {
-      "concurrency": 2
-    },
-    "reasoning-model-pool": {
-      "concurrency": 1
-    }
-  },
-  "concurrency": {
-    "global": 7
-  },
-  "retry": {
-    "max_retries": 3
-  },
-  "progress": {
-    "enabled": true
-  }
-}
-```
+- `context.project_dir`：被分析的源码或输入仓库目录。
+- `context.work_dir`：agent 可写工作目录，任务过程中的写入会限制在这里。
+- `context.workspace_dir`：task_agent 管理 Serve 进程和运行状态的组件工作区。
+- `serve`：OpenCode/nga Serve 的工具、端口、超时、环境变量和 MCP 配置。
+- `model_pool`：可用模型、能力等级、权重、并发和全局并发。
 
-说明：
+`TaskAgentSubmitter` 会把 harness 的业务任务字典转换成 `run_opencode_task()` 调用。业务任务类型仍保留为 `value_asset_map`、`high_risk_module_map`、`high_risk_module_merge` 和 `attack_tree_by_asset`，提交给 task_agent 时统一使用公开 API 支持的 `task_type="threat_analysis"`；默认 `required_capability="high"`。任务携带的 `output_schema` 会传给 task_agent，由 task_agent 负责 JSON 提取、同会话 JSON 修正和 schema 校验，校验后的 `result.structured` 会写入任务的 `output_path`。
 
-- `models` 的 key 是任务类型。
-- 同一个任务类型可以配置一个模型，也可以配置多个模型；多个模型按顺序作为候选，前面的模型资源池满了之后会使用后面的候选。
-- 使用 `OpenCodeAgentRunner` 时，`model` 推荐写成 `provider/model`，例如 `openai/gpt-5-mini`。runner 会把该模型作为 opencode message 的 `model` 参数发送，不会写入运行时 prompt。
-- 如果模型名不能写成 `provider/model`，可以在模型配置里显式传入 `parameters.opencode_model`：
-
-```json
-{
-  "model": "fast-value-model",
-  "resource": "fast-model-pool",
-  "parameters": {
-    "opencode_model": {
-      "providerID": "openai",
-      "modelID": "gpt-5-mini"
-    }
-  }
-}
-```
-
-- `resource` 是模型资源池名称；未配置时默认使用 `model` 字符串作为资源池名称。
-- `model_resources` 配置每个资源池的并发度，这是主要限流方式。
-- `concurrency.global` 是 scheduler worker 总数，通常设置为各模型资源池并发度之和或略高。
-- `concurrency.by_task_type` 仍可作为兼容性的额外限制，但默认不需要配置。
-- `retry.max_retries` 是任务失败后的最大重试次数，未配置时默认 3 次；设置为 `0` 可关闭重试。
-- `progress.enabled` 是全局进度打印开关。开启后会向 stderr 输出 opencode 连接检查、pipeline 阶段、任务排队、任务开始、任务完成和失败信息；关闭后只保留最终 JSON 输出。
-
-opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架中的 `OpenCodeAgentRunner` 会在启动或连接 server 前，把配置的所有 skills 同步到 opencode 项目目录的 `.opencode/skills/<skill-name>/`，并在该目录的 `opencode.json` 中配置 `skills.paths` 指向同一个 `.opencode/skills` 目录；每个 `AgentTask` 会创建独立 opencode session，并通过 `/session/{id}/message` 发送 `/<skill-name>` 开头的提示词调用该 skill。运行时 prompt 只包含当前任务说明、输入文件和 JSON schema，不内联 skill 正文、模型配置或输出路径；prompt 会要求模型“不允许输出json文件，直接返回json结果”。每次 OpenCode 输出因 JSON 解析或 JSON schema 校验失败时，scheduler 会在该次 attempt 的 session 中继续追问“不要写文件，按照正确的JSON Schema直接输出”，并再次校验追问返回的 JSON；如果追问结果仍不合法，再进入原有重试流程。
+新公开 API 不接收 `skill_path` 参数，因此适配器会把对应 `SKILL.md` 正文内联进 prompt；如果 skill 有 `references/` 目录，prompt 会列出引用资料路径，供模型在任务中读取。
 
 ## 命令行启动
 
@@ -222,34 +149,19 @@ opencode 推荐通过 `opencode serve` 作为后台 HTTP server 运行。框架�
 
 ```bash
 python3 scripts/run_threat_analysis.py \
-  --config agent-runtime.json \
+  --config task-agent.yaml \
   --input /path/to/repository-or-input \
   --artifacts-root artifacts \
   --run-id demo-run
 ```
 
-默认情况下，脚本会为本次运行选择一个未占用的随机端口，并执行：
-
-```bash
-opencode serve --hostname 127.0.0.1 --port <auto-port>
-```
-
-然后通过对应的 `http://127.0.0.1:<auto-port>` 连接 opencode server，避免复用旧的 `4096` 进程。
-
-如果 opencode server 已经手动启动：
-
-```bash
-python3 scripts/run_threat_analysis.py \
-  --config agent-runtime.json \
-  --input /path/to/repository-or-input \
-  --no-start-opencode
-```
+Serve 启动、复用、端口和环境变量由 `task-agent.yaml` 中的 `serve` 配置决定。
 
 如果需要指定多个输入文件或目录，可以重复传入 `--input`：
 
 ```bash
 python3 scripts/run_threat_analysis.py \
-  --config agent-runtime.json \
+  --config task-agent.yaml \
   --input product.md \
   --input src \
   --input deploy
@@ -259,17 +171,17 @@ python3 scripts/run_threat_analysis.py \
 
 ```bash
 python3 scripts/run_threat_analysis.py \
-  --config agent-runtime.json \
+  --config task-agent.yaml \
   --input product.md \
   --high-risk-batch src/api src/auth \
   --high-risk-batch src/parser src/protocol
 ```
 
-如果需要继续已有 run，加上 `--resume`。未传 `--run-id` 时会自动选择 `artifacts/runs/` 下最近修改的 run；也可以显式传入同一个 `--run-id`。运行时会检查每个 agent 任务的 `output_path`，如果文件已存在且通过对应 JSON schema 校验，就跳过该任务并复用该输出；不存在或校验失败的任务会重新执行：
+如果需要继续已有 run，加上 `--resume`。未传 `--run-id` 时会自动选择 `artifacts/runs/` 下最近修改的 run；也可以显式传入同一个 `--run-id`。pipeline 会检查每个任务的 `output_path`，如果文件已存在且可解析为 JSON，就跳过该任务并复用该输出；不存在或 JSON 不可解析的任务会重新执行。由 task_agent 生成的任务输出在生成时已经完成对应 JSON schema 校验：
 
 ```bash
 python3 scripts/run_threat_analysis.py \
-  --config agent-runtime.json \
+  --config task-agent.yaml \
   --input product.md \
   --run-id demo-run \
   --resume
@@ -277,83 +189,54 @@ python3 scripts/run_threat_analysis.py \
 
 常用参数：
 
-- `--opencode-base-url`：opencode server 地址；未传且自动启动 opencode 时使用随机未占用端口。
-- `--opencode-command`：启动 opencode serve 的命令字符串；未传 `--opencode-base-url` 时，其中的 `--port` 会被本次运行的随机端口覆盖。
-- `--opencode-directory`：opencode 运行的项目目录；runner 会把威胁分析所需的所有 skills 安装到该目录下的 `.opencode/skills/`，并把该路径写入此目录的 `opencode.json` 中的 `skills.paths`。
-- `--opencode-password`：basic auth 密码；未传时读取 `OPENCODE_PASSWORD`。
-- `--opencode-agent`：发送给 opencode 的 agent 名称。
+- `--config`：task_agent YAML 配置文件路径。
+- `--input`：输入文件或目录，可重复传入。
+- `--high-risk-batch`：高风险模块识别输入 batch，可重复传入。
+- `--attack-tree-context`：攻击树额外上下文文件，可重复传入。
+- `--artifacts-root` / `--run-id`：产物根目录和本次运行 ID。
 - `--timeout`：等待每批 agent 任务的超时时间。
-- `--resume`：继续已有 run；未传 `--run-id` 时使用最近修改的 run，任务输出文件已存在且 schema 校验通过时跳过该任务。
-- `--delete-session`：任务完成后删除对应 opencode session。
-- `--print-progress` / `--no-print-progress`：覆盖配置文件中的 `progress.enabled`，控制是否打印关键步骤进度。
+- `--resume`：继续已有 run；未传 `--run-id` 时使用最近修改的 run，任务输出文件已存在且可解析为 JSON 时跳过该任务。
+- `--print-progress` / `--no-print-progress`：控制是否打印 pipeline 关键步骤进度。
 
 脚本结束后会输出本次 run ID、产物数量和最终 JSON 路径。
 
 也可以在代码中直接组装 pipeline：
 
 ```python
-from functools import partial
-
-from agent_runtime import AgentScheduler, ModelRouter, OpenCodeAgentRunner, load_runtime_config, submit_tasks
+from threat_analysis_harness import (
+    TaskAgentSubmitter,
+    ThreatAnalysisLayout,
+    ThreatAnalysisPipeline,
+)
 from threat_analysis_harness.skills import default_skill_paths
 
-config = load_runtime_config("agent-runtime.json")
 skill_paths = default_skill_paths()
+layout = ThreatAnalysisLayout.for_run("artifacts", "demo-run")
+submitter = TaskAgentSubmitter(config_path="task-agent.yaml")
 
-runner = OpenCodeAgentRunner(
-    start_command=("opencode", "serve", "--hostname", "127.0.0.1", "--port", "4096"),
-    skill_paths=(
-        skill_paths.value_asset_map,
-        skill_paths.high_risk_module_map,
-        skill_paths.high_risk_module_merge,
-        skill_paths.attack_tree_by_asset,
-    ),
-)
-
-with runner:
-    scheduler = AgentScheduler(
-        runner=runner,
-        model_router=ModelRouter(config),
+try:
+    pipeline = ThreatAnalysisPipeline(
+        submit_tasks=submitter.submit_tasks,
+        layout=layout,
+        skill_paths=skill_paths,
     )
-    with scheduler:
-        pipeline_submit_tasks = partial(submit_tasks, scheduler)
-        # 将 pipeline_submit_tasks 传给 ThreatAnalysisPipeline
+    result = pipeline.run(
+        input_files=["/path/to/repository-or-input"],
+        timeout=None,
+    )
+finally:
+    submitter.shutdown_sync()
 ```
 
-如果用户已经手动启动了 opencode server，可以只连接已有 server：
+`ThreatAnalysisPipeline` 只依赖 `pipeline_submit_tasks(tasks, timeout=None)` 这个函数契约；如果替换 runtime，只需要在装配层传入另一个同签名函数。
 
-```python
-runner = OpenCodeAgentRunner(
-    base_url="http://127.0.0.1:4096",
-    start_command=None,
-    skill_paths=(
-        skill_paths.value_asset_map,
-        skill_paths.high_risk_module_map,
-        skill_paths.high_risk_module_merge,
-        skill_paths.attack_tree_by_asset,
-    ),
-)
-```
+`tasks` 和返回值都使用普通 JSON 字典。任务 JSON 字段约定为：
 
-未显式传入 `base_url` 时，runner 会把 `--port` 改写为本次运行选出的随机未占用端口。
+- 必填：`task_id`、`task_type`、`skill_path`、`runtime_prompt`、`output_path`。
+- 可选：`input_files`、`output_schema`、`output_schema_path`、`metadata`、`priority`。
+- 返回结果至少包含：`task_id`、`task_type`、`status`、`output_path`、`output`；失败时包含 `error`。
 
-如果启用了 opencode server basic auth：
-
-```python
-runner = OpenCodeAgentRunner(
-    base_url="http://127.0.0.1:4096",
-    username="opencode",
-    password="your-password",
-    skill_paths=(
-        skill_paths.value_asset_map,
-        skill_paths.high_risk_module_map,
-        skill_paths.high_risk_module_merge,
-        skill_paths.attack_tree_by_asset,
-    ),
-)
-```
-
-runner 每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`。使用 opencode runner 时，程序会通过 `/session/{id}/message` 发送 message 并读取返回的 assistant 文本；如果返回内容不是 assistant 消息，会回查 `/session/{id}/message` 的消息列表。最终 assistant 文本会写入 `<output_path>.raw.txt`；运行框架随后从该最终文本中提取 JSON，完成 JSON schema 校验后，再由程序将规范化 JSON 写入 `output_path`。
+适配器每个任务会把完整 prompt 写入 `<output_path>.prompt.txt`，把模型原始文本写入 `<output_path>.raw.txt`，并把简要运行信息写入 `<output_path>.log`。
 
 ## Web 查看页
 

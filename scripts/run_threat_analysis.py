@@ -5,11 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shlex
 import sys
 import time
-from functools import partial
 from pathlib import Path
 
 
@@ -18,16 +15,9 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agent_runtime import (  # noqa: E402
-    AgentScheduler,
-    ModelRouter,
-    OpenCodeAgentRunner,
-    ProgressPrinter,
-    load_runtime_config,
-    submit_tasks as submit_agent_tasks,
-)
 from threat_analysis_harness import ThreatAnalysisLayout, ThreatAnalysisPipeline  # noqa: E402
 from threat_analysis_harness.skills import default_skill_paths  # noqa: E402
+from threat_analysis_harness.task_agent_submitter import TaskAgentSubmitter  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,13 +39,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run ThreatAnalysis with opencode serve.",
+        description="Run ThreatAnalysis with task_agent.",
     )
     parser.add_argument(
         "-c",
         "--config",
-        default="agent-runtime.json",
-        help="模型与并发配置 JSON，默认 agent-runtime.json。",
+        default="task-agent.yaml",
+        help="task_agent YAML 配置，默认 task-agent.yaml。",
     )
     parser.add_argument(
         "-i",
@@ -102,52 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="等待每批 agent 任务的超时时间，单位秒。",
     )
-    parser.add_argument(
-        "--opencode-base-url",
-        default=None,
-        help="opencode serve 地址；未传且会启动 opencode 时自动选择随机未占用端口。",
-    )
-    parser.add_argument(
-        "--opencode-command",
-        default="opencode serve --hostname 127.0.0.1 --port 4096",
-        help="启动 opencode serve 的命令字符串；未传 --opencode-base-url 时其中 --port 会被随机未占用端口覆盖。",
-    )
-    parser.add_argument(
-        "--opencode-directory",
-        default=None,
-        help="opencode 运行的项目目录；未传时使用当前工作目录。",
-    )
-    parser.add_argument(
-        "--no-start-opencode",
-        action="store_true",
-        help="不启动 opencode serve，只连接已有 server。",
-    )
-    parser.add_argument(
-        "--opencode-username",
-        default="opencode",
-        help="opencode basic auth 用户名。",
-    )
-    parser.add_argument(
-        "--opencode-password",
-        default=None,
-        help="opencode basic auth 密码；未传时读取 OPENCODE_PASSWORD。",
-    )
-    parser.add_argument(
-        "--opencode-agent",
-        default=None,
-        help="发送给 opencode 的 agent 名称。",
-    )
-    parser.add_argument(
-        "--delete-session",
-        action="store_true",
-        help="任务完成后删除对应 opencode session。",
-    )
-    parser.set_defaults(print_progress=None)
+    parser.set_defaults(print_progress=True)
     parser.add_argument(
         "--print-progress",
         dest="print_progress",
         action="store_true",
-        help="打印关键步骤和任务的开始/完成情况；未传时使用配置文件 progress.enabled。",
+        help="打印关键步骤进度。",
     )
     parser.add_argument(
         "--no-print-progress",
@@ -155,76 +105,32 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="关闭关键步骤和任务进度打印。",
     )
-    parser.add_argument(
-        "--server-timeout",
-        type=float,
-        default=None,
-        help="opencode HTTP 请求超时时间，单位秒。",
-    )
-    parser.add_argument(
-        "--startup-timeout",
-        type=float,
-        default=30.0,
-        help="等待 opencode serve 启动的超时时间，单位秒。",
-    )
     return parser
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
-    config = load_runtime_config(args.config)
     run_id = _resolve_run_id(args)
     layout = ThreatAnalysisLayout.for_run(args.artifacts_root, run_id)
-    start_command = None if args.no_start_opencode else tuple(shlex.split(args.opencode_command))
-    base_url = args.opencode_base_url
-    if args.no_start_opencode and base_url is None:
-        base_url = "http://127.0.0.1:4096"
-    password = args.opencode_password or os.environ.get("OPENCODE_PASSWORD")
-    progress_enabled = (
-        config.progress_enabled if args.print_progress is None else bool(args.print_progress)
-    )
-    progress = ProgressPrinter(enabled=progress_enabled)
+    progress = ConsoleProgress(enabled=bool(args.print_progress))
     skill_paths = default_skill_paths(args.project_root)
+    submitter = TaskAgentSubmitter(config_path=args.config)
 
-    runner = OpenCodeAgentRunner(
-        base_url=base_url,
-        start_command=start_command,
-        cwd=args.opencode_directory,
-        timeout=args.server_timeout,
-        startup_timeout=args.startup_timeout,
-        username=args.opencode_username,
-        password=password,
-        agent=args.opencode_agent,
-        delete_session=args.delete_session,
-        skill_paths=(
-            skill_paths.value_asset_map,
-            skill_paths.high_risk_module_map,
-            skill_paths.high_risk_module_merge,
-            skill_paths.attack_tree_by_asset,
-        ),
-    )
-
-    progress.emit(f"opencode server check started: base_url={base_url or 'auto'}")
-    with runner:
-        progress.emit(f"opencode server ready: base_url={runner.base_url}")
-        scheduler = AgentScheduler(
-            runner=runner,
-            model_router=ModelRouter(config),
+    try:
+        pipeline = ThreatAnalysisPipeline(
+            submit_tasks=submitter.submit_tasks,
+            layout=layout,
+            skill_paths=skill_paths,
             progress_reporter=progress,
         )
-        with scheduler:
-            pipeline = ThreatAnalysisPipeline(
-                submit_tasks=partial(submit_agent_tasks, scheduler),
-                layout=layout,
-                skill_paths=skill_paths,
-                progress_reporter=progress,
-            )
-            result = pipeline.run(
-                input_files=[Path(path) for path in args.input],
-                high_risk_input_batches=_high_risk_batches(args.high_risk_batch),
-                attack_tree_context_files=[Path(path) for path in args.attack_tree_context],
-                timeout=args.timeout,
-                resume=args.resume,
-            )
+        result = pipeline.run(
+            input_files=[Path(path) for path in args.input],
+            high_risk_input_batches=_high_risk_batches(args.high_risk_batch),
+            attack_tree_context_files=[Path(path) for path in args.attack_tree_context],
+            timeout=args.timeout,
+            resume=args.resume,
+        )
+    finally:
+        submitter.shutdown_sync()
 
     return {
         "run_id": run_id,
@@ -272,6 +178,15 @@ def _latest_run_id(artifacts_root: str | Path) -> str | None:
 
     latest = max(run_dirs, key=lambda path: path.stat().st_mtime)
     return latest.name
+
+
+class ConsoleProgress:
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = enabled
+
+    def emit(self, message: str) -> None:
+        if self.enabled:
+            print(f"[threat-analysis] {message}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

@@ -11,15 +11,17 @@ ThreatAnalysis 是一个威胁分析 AI Agent 编排框架。它读取代码仓�
 3. 基于价值资产和高风险模块生成理论攻击树。
 4. 输出可供 Web 静态查看页导入的 JSON 产物。
 
-核心业务编排入口是 `ThreatAnalysisPipeline.run()`，代码位于 `src/threat_analysis_harness/pipeline.py`。Agent 执行、调度、模型路由和输出校验在 `src/agent_runtime/` 下。
+核心业务编排入口是 `ThreatAnalysisPipeline.run()`，代码位于 `src/threat_analysis_harness/pipeline.py`。实际模型任务通过 `src/threat_analysis_harness/task_agent_submitter.py` 适配到 `src/task_agent/` 的 `run_opencode_task()`。
 
 ## 目录职责
 
 - `src/threat_analysis_harness/`：威胁分析业务流水线、阶段实现、产物目录布局和 JSON schema。
 - `src/threat_analysis_harness/stages/`：价值资产、高风险模块、攻击树三个阶段的任务构造、合并和一致性处理。
-- `src/agent_runtime/`：通用 Agent 运行时，包括 scheduler、queue、runner、prompt builder、模型路由、输出解析和校验。
+- `src/threat_analysis_harness/task_agent_submitter.py`：harness 到新 `task_agent` 公开接口的同步提交适配器。
+- `src/task_agent/`：新的 OpenCode/nga Serve 任务框架，负责模型池、队列、会话、重试、事件流和 JSON schema 校验。
+- `src/agent_runtime/`：旧通用 Agent 运行时，当前保留兼容代码和测试。
 - `skills/threat-analysis-harness/`：opencode 运行时使用的 skill 提示词和引用资料。
-- `scripts/run_threat_analysis.py`：命令行入口，会启动或连接 `opencode serve` 并运行完整流水线。
+- `scripts/run_threat_analysis.py`：命令行入口，通过 task_agent 启动或复用 Serve 并运行完整流水线。
 - `web/`：静态产物查看页，可直接打开 `web/index.html` 导入最终 JSON。
 - `tests/`：标准库 `unittest` 测试和 fixture。
 - `origin/`：原始需求、分析方法或参考资料，修改业务规则前应先查看这里。
@@ -29,27 +31,20 @@ ThreatAnalysis 是一个威胁分析 AI Agent 编排框架。它读取代码仓�
 复制示例配置并按实际模型资源调整：
 
 ```bash
-cp agent-runtime.example.json agent-runtime.json
+cp src/task_agent/task-agent.example.yaml task-agent.yaml
 ```
 
 运行完整威胁分析：
 
 ```bash
 python3 scripts/run_threat_analysis.py \
-  --config agent-runtime.json \
+  --config task-agent.yaml \
   --input /path/to/repository-or-input \
   --artifacts-root artifacts \
   --run-id demo-run
 ```
 
-脚本默认会选择随机未占用端口启动 `opencode serve`。如果已经手动启动 opencode server，可使用：
-
-```bash
-python3 scripts/run_threat_analysis.py \
-  --config agent-runtime.json \
-  --input /path/to/repository-or-input \
-  --no-start-opencode
-```
+Serve 启动、复用、端口、环境变量和模型池由 `task-agent.yaml` 控制。
 
 查看产物时直接打开 `web/index.html`，分别导入最终的价值资产、高风险模块和攻击树 JSON。
 
@@ -61,7 +56,7 @@ python3 scripts/run_threat_analysis.py \
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-修改流水线阶段、schema、prompt builder、scheduler、runner 或输出校验逻辑后，应运行完整测试。只改 Markdown 文档时可不运行测试，但最终说明中要明确测试未运行的原因。
+修改流水线阶段、schema、task_agent submitter、运行框架或输出校验逻辑后，应运行完整测试。只改 Markdown 文档时可不运行测试，但最终说明中要明确测试未运行的原因。
 
 ## 关键数据流
 
@@ -89,15 +84,14 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 ## 重要约定
 
-- Agent 任务输出必须是可解析 JSON，并通过 `src/threat_analysis_harness/schemas.py` 中对应 schema 校验。
-- prompt 要求 Agent 不允许输出json文件，直接返回json结果。运行时会从最终回复文本中提取 JSON，再写入规范化 `output_path`。
-- 如果 OpenCode 任务在任意 attempt 中因 JSON 解析或 schema 校验失败，scheduler 会在该 attempt 的 session 里追问“不要写文件，按照正确的JSON Schema直接输出”，再校验追问结果；如果追问结果仍不合法，再进入原有重试流程。
-- 命令行 `--resume` 未传 `--run-id` 时会选择 `artifacts/runs/` 下最近修改的 run，并按每个 agent task 的 `output_path` 判断是否可跳过；文件存在且通过对应 schema 校验时复用该输出，否则重新执行任务。
-- `task_type` 必须能在 `agent-runtime.json` 的 `models` 中找到模型配置。
-- 模型并发主要由 `model_resources` 控制；`concurrency.global` 是 scheduler worker 数。
-- opencode runner 会把配置的 skills 安装到 opencode 工作目录的 `.opencode/skills/`，并更新该目录的 `opencode.json`。
-- `FunctionAgentRunner` 主要用于测试或进程内集成；`CommandAgentRunner` 用于外部命令型 Agent；`OpenCodeAgentRunner` 用于实际 opencode server。
-- 不要让业务阶段直接依赖某个具体模型；模型选择应保留在 runtime config 和 `ModelRouter` 中。
+- Agent 任务会携带 `src/threat_analysis_harness/schemas.py` 中对应业务 schema；JSON 提取、schema 校验、同会话修正和规范化写入由 `task_agent` 与 `TaskAgentSubmitter` 协作完成。
+- `task_agent.run_opencode_task()` 会在传入 `output_schema` 时追加 JSON 输出约束；业务 harness 不直接拼接 runtime 指令。
+- 新公开 API 不接收 `skill_path`，`TaskAgentSubmitter` 会把 `SKILL.md` 正文内联进 prompt，并列出 `references/` 文件路径。
+- 命令行 `--resume` 未传 `--run-id` 时会选择 `artifacts/runs/` 下最近修改的 run，并按每个任务的 `output_path` 判断是否可跳过；文件存在且可解析为 JSON 时复用该输出，否则重新执行任务。
+- harness 业务 `task_type` 保持原值；提交给 task_agent 时默认映射为公开 API 支持的 `task_type="threat_analysis"`。
+- 模型选择、能力等级和并发由 `task-agent.yaml` 的 `model_pool` 控制。
+- 不要让业务阶段直接依赖某个具体模型；模型选择应保留在 task_agent 配置和 submitter 装配层。
+- `ThreatAnalysisPipeline` 只依赖 `submit_tasks(tasks, timeout=None)` 函数；`tasks` 和返回结果均为普通 JSON 字典。替换 runtime 时，在装配层替换同签名函数或 adapter，不要让 harness 直接依赖新 runtime 的内部类型。
 
 ## 修改建议
 
@@ -105,7 +99,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - 改输出字段、枚举或必填项时，必须同步更新 schema、skill 提示词、测试 fixture 和 Web 展示逻辑。
 - 改 skill 时，保持 `SKILL.md` 的输出格式要求和程序 schema 一致；如果新增引用资料，放在对应 skill 的 `references/` 目录。
 - 改攻击树一致性规则时，重点检查 `src/threat_analysis_harness/stages/attack_trees.py`，避免生成无法关联最终高风险模块的攻击路径。
-- 改调度、并发或模型路由时，优先补充 `tests/test_agent_runtime.py`，覆盖资源池限流、候选模型选择和失败结果。
+- 改调度、并发或模型路由时，优先补充对应运行框架测试，覆盖资源池限流、候选模型选择和失败结果。
 - 改 Web 页时保持静态可用，不引入构建步骤，除非同时补齐运行说明。
 
 ## 编码风格

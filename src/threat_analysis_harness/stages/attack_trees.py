@@ -7,14 +7,13 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_runtime import AgentTask, SubmitTasks
-from agent_runtime.prompt_builder import JSON_RESULT_INSTRUCTION
-
 from threat_analysis_harness.artifacts import ThreatAnalysisLayout
 from threat_analysis_harness.errors import ArtifactConsistencyError
 from threat_analysis_harness.schemas import ATTACK_TREE_SCHEMA
 from threat_analysis_harness.stages.base import (
     ProgressReporter,
+    SubmitTasks,
+    TaskJson,
     require_all_success,
     run_or_resume_tasks,
 )
@@ -41,8 +40,8 @@ class AttackTreeStage:
         high_risk_modules: Sequence[dict[str, Any]],
         context_files: Sequence[str | Path] = (),
         runtime_prompt: str | None = None,
-    ) -> list[AgentTask]:
-        tasks: list[AgentTask] = []
+    ) -> list[TaskJson]:
+        tasks: list[TaskJson] = []
         for index, asset in enumerate(value_assets, start=1):
             task_id = f"attack-tree-by-asset-{index:03d}"
             task_input = self.layout.write_task_input(
@@ -53,25 +52,25 @@ class AttackTreeStage:
                 },
             )
             tasks.append(
-                AgentTask(
-                    task_id=task_id,
-                    task_type=self.task_type,
-                    skill_path=self.skill_path,
-                    runtime_prompt=runtime_prompt
+                {
+                    "task_id": task_id,
+                    "task_type": self.task_type,
+                    "skill_path": self.skill_path,
+                    "runtime_prompt": runtime_prompt
                     or _asset_prompt(
                         asset,
                         task_input=task_input,
                         context_files=context_files,
                     ),
-                    input_files=tuple([str(task_input)] + [str(path) for path in context_files]),
-                    output_path=str(self.layout.attack_trees_raw_dir / f"{task_id}.json"),
-                    output_schema=ATTACK_TREE_SCHEMA,
-                    metadata={
+                    "input_files": [str(task_input)] + [str(path) for path in context_files],
+                    "output_path": str(self.layout.attack_trees_raw_dir / f"{task_id}.json"),
+                    "output_schema": ATTACK_TREE_SCHEMA,
+                    "metadata": {
                         "stage": "attack_trees",
                         "asset_name": asset.get("资产名") or asset.get("asset_name"),
                     },
-                    priority=40,
-                )
+                    "priority": 40,
+                }
             )
         return tasks
 
@@ -104,7 +103,7 @@ class AttackTreeStage:
         )
         normalized_outputs = [
             normalize_attack_tree_output(
-                result.output,
+                result["output"],
                 value_asset=asset,
                 high_risk_modules=high_risk_modules,
             )
@@ -170,7 +169,6 @@ def _asset_prompt(
         "high_risk_modules 是全部最终高风险模块列表；必须读取该文件中的高风险模块后再分析攻击路径。"
         f"{context_text}"
         "最终只输出符合 JSON schema 的对象。"
-        f"{JSON_RESULT_INSTRUCTION}"
     )
 
 

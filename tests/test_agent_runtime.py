@@ -178,11 +178,12 @@ class AgentRuntimeTests(unittest.TestCase):
                 model_router=router(),
             )
             with scheduler:
-                results = submit_tasks(scheduler, [self.make_task(tmp)], timeout=5)
+                task = self.make_task(tmp).to_dict()
+                results = submit_tasks(scheduler, [task], timeout=5)
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].status, TaskStatus.SUCCEEDED)
-        self.assertEqual(results[0].output, {"task_id": "task-1", "model": "test-model"})
+        self.assertEqual(results[0]["status"], "succeeded")
+        self.assertEqual(results[0]["output"], {"task_id": "task-1", "model": "test-model"})
 
     def test_submitter_extracts_json_and_writes_canonical_output(self):
         def run(task, model_config, prompt):

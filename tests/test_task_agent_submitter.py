@@ -49,9 +49,10 @@ class TaskAgentSubmitterTests(unittest.TestCase):
         self.assertEqual(call["required_capability"], "low")
         self.assertEqual(call["invalid_json_retry_count"], 3)
         self.assertEqual(call["output_schema"], {"type": "array"})
-        self.assertIn("Skill body", call["prompt"])
+        self.assertEqual(call["prompt"], "/unit-skill\n\nRuntime prompt")
         self.assertIn("Runtime prompt", call["prompt"])
-        self.assertIn("references/ref.txt", call["prompt"])
+        self.assertNotIn("Skill body", call["prompt"])
+        self.assertNotIn("references/ref.txt", call["prompt"])
 
     def test_submitter_returns_failed_result_for_task_agent_failure(self):
         async def fake_run_opencode_task(**kwargs):
@@ -78,7 +79,7 @@ class TaskAgentSubmitterTests(unittest.TestCase):
 
 def _task(tmp: str, **extra):
     root = Path(tmp)
-    skill_dir = root / "skill"
+    skill_dir = root / "unit-skill"
     references_dir = skill_dir / "references"
     references_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("# Unit Skill\n\nSkill body\n", encoding="utf-8")

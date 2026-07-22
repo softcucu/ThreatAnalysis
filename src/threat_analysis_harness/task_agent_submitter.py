@@ -215,41 +215,13 @@ def submit_tasks(
 
 
 def build_task_agent_prompt(task: Mapping[str, Any]) -> str:
-    """Inline the harness skill instructions into the task_agent prompt."""
+    """Invoke the OpenCode skill configured in task_agent and pass the task prompt."""
 
     runtime_prompt = str(task.get("runtime_prompt") or "").strip()
-    skill_file = _skill_file(task["skill_path"])
-    skill_text = skill_file.read_text(encoding="utf-8").strip()
-    input_files = [str(path) for path in task.get("input_files", ())]
-    reference_files = _reference_files(skill_file.parent)
-
-    parts = [
-        "请严格遵循以下 Skill 指令完成本次威胁分析任务。",
-        "",
-        "## Skill 指令",
-        f"来源：{skill_file}",
-        "",
-        skill_text,
-    ]
-    if reference_files:
-        parts.extend([
-            "",
-            "## Skill 引用资料",
-            "任务需要引用资料时，请读取以下文件；不得虚构或改写引用资料内容。",
-            *[f"- {path}" for path in reference_files],
-        ])
-    parts.extend([
-        "",
-        "## 本次任务",
-        runtime_prompt,
-    ])
-    if input_files:
-        parts.extend([
-            "",
-            "## 输入文件",
-            *[f"- {path}" for path in input_files],
-        ])
-    return "\n".join(parts).strip()
+    skill_name = _skill_name_from_path(task["skill_path"])
+    if not runtime_prompt:
+        return f"/{skill_name}"
+    return f"/{skill_name}\n\n{runtime_prompt}"
 
 
 def _run_sync(awaitable: Awaitable[Any]) -> Any:
@@ -266,20 +238,21 @@ def _run_sync(awaitable: Awaitable[Any]) -> Any:
     )
 
 
-def _skill_file(skill_path: str | PathLike[str]) -> Path:
-    path = Path(skill_path).expanduser().resolve()
-    if path.is_dir():
-        path = path / "SKILL.md"
-    if not path.is_file():
-        raise FileNotFoundError(f"Skill file does not exist: {path}")
-    return path
-
-
-def _reference_files(skill_dir: Path) -> list[Path]:
-    references_dir = skill_dir / "references"
-    if not references_dir.is_dir():
-        return []
-    return sorted(path.resolve() for path in references_dir.rglob("*") if path.is_file())
+def _skill_name_from_path(skill_path: str | PathLike[str]) -> str:
+    raw = str(skill_path or "").strip()
+    if not raw:
+        raise ValueError("task skill_path is required")
+    path = Path(raw).expanduser()
+    if path.name == "SKILL.md":
+        name = path.parent.name
+    elif path.suffix.lower() in {".md", ".markdown", ".txt"}:
+        name = path.stem
+    else:
+        name = path.name
+    name = name.strip()
+    if not name:
+        raise ValueError(f"Cannot derive skill name from skill_path: {skill_path!r}")
+    return name
 
 
 def _task_output_schema(task: Mapping[str, Any]) -> dict[str, Any] | None:

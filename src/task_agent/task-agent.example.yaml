@@ -21,9 +21,16 @@ serve:
   #   no_proxy: 127.0.0.1,localhost
   environment: {}
   # OpenCode 的完整配置直接写在这里；MCP 服务名可以自行定义。
+  # skills.paths 配置包含 skill 子目录的父目录；task prompt 会用 /skill-name 调用。
   # 下列远程和本地示例默认关闭。替换占位配置后，将 enabled 改为 true。
   # timeout 的单位是毫秒。
   opencode_config:
+    skills:
+      paths:
+        - /absolute/path/to/source/skills/threat-analysis-harness/value-assets
+        - /absolute/path/to/source/skills/threat-analysis-harness/high-risk-modules
+        - /absolute/path/to/source/skills/threat-analysis-harness/attack-trees
+
     mcp:
       remote-example:
         type: remote

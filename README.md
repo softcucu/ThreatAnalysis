@@ -136,12 +136,13 @@ cp src/task_agent/task-agent.example.yaml task-agent.yaml
 - `context.project_dir`：被分析的源码或输入仓库目录。
 - `context.work_dir`：agent 可写工作目录，任务过程中的写入会限制在这里。
 - `context.workspace_dir`：task_agent 管理 Serve 进程和运行状态的组件工作区。
-- `serve`：OpenCode/nga Serve 的工具、端口、超时、环境变量和 MCP 配置。
+- `serve`：OpenCode/nga Serve 的工具、端口、超时、环境变量和 OpenCode 原生配置。
+- `serve.opencode_config.skills.paths`：OpenCode skill 搜索路径；harness 默认需要配置 `skills/threat-analysis-harness/value-assets`、`skills/threat-analysis-harness/high-risk-modules` 和 `skills/threat-analysis-harness/attack-trees`。
 - `model_pool`：可用模型、能力等级、权重、并发和全局并发。
 
 `TaskAgentSubmitter` 会把 harness 的业务任务字典转换成 `run_opencode_task()` 调用。业务任务类型仍保留为 `value_asset_map`、`high_risk_module_map`、`high_risk_module_merge` 和 `attack_tree_by_asset`，提交给 task_agent 时统一使用公开 API 支持的 `task_type="threat_analysis"`；默认 `required_capability="high"`。任务携带的 `output_schema` 会传给 task_agent，由 task_agent 负责 JSON 提取、同会话 JSON 修正和 schema 校验，校验后的 `result.structured` 会写入任务的 `output_path`。
 
-新公开 API 不接收 `skill_path` 参数，因此适配器会把对应 `SKILL.md` 正文内联进 prompt；如果 skill 有 `references/` 目录，prompt 会列出引用资料路径，供模型在任务中读取。
+`TaskAgentSubmitter` 不读取或内联 `SKILL.md`。`task_agent` 会把 `serve.opencode_config` 写入 OpenCode 配置并加载其中的 `skills.paths`；适配器只根据 harness 任务的 `skill_path` 推导 skill 名称，并在 prompt 开头使用 `/skill-name` 调用已配置的 skill。
 
 ## 命令行启动
 

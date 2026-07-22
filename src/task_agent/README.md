@@ -38,7 +38,7 @@ result = await run_opencode_task(
 
 未注册宿主时，同一函数会从组件自有的 YAML 文件完成初始化。可以传入 `config_path=...`、设置 `TASK_AGENT_CONFIG`，或将 `task-agent.yaml` 放在当前目录中。请复制 `task-agent.example.yaml` 作为起点。在单例的整个生命周期内，该配置会固定项目、可写工作目录、组件工作区、Serve 进程设置和显式模型池。只有执行 `await shutdown_opencode()` 后才能选择其他配置。
 
-OpenCode 的原生配置放在 `serve.opencode_config` 下，其中 MCP 配置使用 `serve.opencode_config.mcp`。示例文件同时给出了 `type: remote` 的 HTTP MCP 和 `type: local` 的进程 MCP；两项默认关闭，配置好 URL、请求头或启动命令后再将对应的 `enabled` 改为 `true`。MCP 的 `timeout` 单位为毫秒。
+OpenCode 的原生配置放在 `serve.opencode_config` 下，其中 skill 路径使用 `serve.opencode_config.skills.paths`，MCP 配置使用 `serve.opencode_config.mcp`。示例文件同时给出了 `type: remote` 的 HTTP MCP 和 `type: local` 的进程 MCP；两项默认关闭，配置好 URL、请求头或启动命令后再将对应的 `enabled` 改为 `true`。MCP 的 `timeout` 单位为毫秒。
 
 独立运行时，组件默认将任务排队、模型选择、Serve 启动或复用、Session 状态、工具数量、step、reasoning、文本、JSON 修正和最终状态实时打印到终端并立即刷新。`vulnerability_validation` 使用 `[validation/opencode]` 前缀，其它任务使用 `[<task_type>/opencode]`；宿主模式仍只使用宿主绑定的输出回调，不会额外重复打印。
 

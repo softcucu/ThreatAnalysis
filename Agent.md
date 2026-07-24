@@ -62,7 +62,6 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 ```text
 <output-path>/
-  task_inputs/
   value_assets/
     raw/
     final/value-assets.json
@@ -78,7 +77,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 高风险模块阶段会按五类高风险特征拆分 map 任务，并通过单独的 merge 任务合并候选模块。
 
-攻击树阶段会按最终价值资产逐个启动任务。每个攻击树任务只分析一个价值资产，但会收到完整最终高风险模块列表。合并攻击树前会执行一致性对齐：价值资产名称、根节点、叶子节点和 `related_high_risk_modules` 都必须能和最终产物关联；内部节点不能匹配最终高风险模块时会按普通内部节点保留。攻击树 schema 要求非空树、非空边和非空攻击路径，resume 时会对攻击树 raw 输出重新跑 schema 校验，空树不会被当作成功产物复用。
+攻击树阶段会按最终价值资产逐个启动任务。每个攻击树任务只分析 runtime prompt 中的当前价值资产，并直接读取 `high_risk_modules/final/high-risk-module-merge.json` 中的完整最终高风险模块列表，不再生成重复的 `task_inputs` 文件。合并攻击树前会执行一致性对齐：价值资产名称、根节点、叶子节点和 `related_high_risk_modules` 都必须能和最终产物关联；内部节点不能匹配最终高风险模块时会按普通内部节点保留。攻击树 schema 要求非空树、非空边和非空攻击路径，resume 时会对攻击树 raw 输出重新跑 schema 校验，空树不会被当作成功产物复用。
 
 ## 重要约定
 

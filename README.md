@@ -68,22 +68,13 @@ runs/<run_id>/high_risk_modules/final/high-risk-module-merge.json
 
 攻击树阶段按价值资产拆任务：每个最终价值资产对应一个 `attack_tree_by_asset` agent 任务。
 
-每个攻击树任务都会生成一个结构化输入文件，包含：
-
-```json
-{
-  "value_asset": "当前价值资产",
-  "high_risk_modules": "全部最终高风险模块"
-}
-```
-
-也就是说，攻击树任务只分析一个价值资产，但每次都会拿到完整的高风险模块列表，用于判断从外部暴露高风险模块到价值资产的影响路径。
-
-攻击树任务输入写入：
+每个攻击树任务的 runtime prompt 会直接携带当前价值资产，并读取已有的最终高风险模块文件：
 
 ```text
-runs/<run_id>/task_inputs/attack-tree-by-asset-*.input.json
+runs/<run_id>/high_risk_modules/final/high-risk-module-merge.json
 ```
+
+也就是说，攻击树任务只分析一个价值资产，同时使用完整的最终高风险模块列表判断从外部暴露高风险模块到价值资产的影响路径；流程不会额外生成重复的 `task_inputs` 文件。
 
 攻击树任务解析校验后的 JSON 输出写入：
 

@@ -219,13 +219,22 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                 if task["task_type"] == "attack_tree_by_asset":
                     self.assertEqual(task["skill_name"], "attack-tree-by-asset")
                     self.assertIs(task["output_schema"], ATTACK_TREE_SCHEMA)
-                    task_input = next(
-                        path for path in task["input_files"] if path.endswith(".input.json")
+                    high_risk_modules_file = next(
+                        path
+                        for path in task["input_files"]
+                        if path.endswith("high-risk-module-merge.json")
                     )
-                    self.assertIn(task_input, prompt)
-                    self.assertIn("high_risk_modules 是全部最终高风险模块列表", prompt)
-                    task_input_payload = json.loads(Path(task_input).read_text(encoding="utf-8"))
-                    self.assertEqual(task_input_payload["high_risk_modules"], HIGH_RISK_MODULES)
+                    self.assertIn(high_risk_modules_file, prompt)
+                    self.assertIn('"资产名": "用户个人数据"', prompt)
+                    self.assertEqual(
+                        json.loads(
+                            Path(high_risk_modules_file).read_text(encoding="utf-8")
+                        ),
+                        HIGH_RISK_MODULES,
+                    )
+                    self.assertFalse(
+                        (Path(tmp) / "runs" / "run-001" / "task_inputs").exists()
+                    )
                     results.append(
                         task_result(
                             task,

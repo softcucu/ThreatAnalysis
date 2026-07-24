@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent_runtime.errors import OutputValidationError
+from agent_runtime.output_validation import parse_json_output_for_schema
 from threat_analysis_harness import (
     ThreatAnalysisLayout,
     ThreatAnalysisPipeline,
@@ -14,6 +16,10 @@ from threat_analysis_harness.schemas import (
     ATTACK_TREE_SCHEMA,
     HIGH_RISK_MODULES_SCHEMA,
     VALUE_ASSETS_SCHEMA,
+)
+from threat_analysis_harness.stages.attack_trees import (
+    AttackTreeStage,
+    normalize_attack_tree_output,
 )
 from threat_analysis_harness.stages.base import existing_success_result
 
@@ -346,6 +352,58 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
         self.assertIn("task resumed: task_id=value-asset-map-data", progress_text)
         self.assertIn("task resumed: task_id=high-risk-module-merge", progress_text)
         self.assertIn("task resumed: task_id=attack-tree-by-asset-001", progress_text)
+
+    def test_attack_tree_allows_unmatched_internal_node_marked_high_risk(self):
+        output = attack_tree_output()
+        internal_node = output["attack_trees"][0]["nodes"][2]
+        internal_node["is_high_risk_module"] = True
+
+        normalized = normalize_attack_tree_output(
+            output,
+            value_asset=VALUE_ASSETS[0],
+            high_risk_modules=HIGH_RISK_MODULES,
+        )
+
+        nodes_by_id = {
+            node["node_id"]: node for node in normalized["attack_trees"][0]["nodes"]
+        }
+        self.assertEqual(nodes_by_id["I-001"]["module_name"], "用户资料处理组件")
+        self.assertFalse(nodes_by_id["I-001"]["is_high_risk_module"])
+        self.assertFalse(nodes_by_id["I-001"]["external_exposure"])
+        related_modules = normalized["attack_trees"][0]["attack_paths"][0][
+            "related_high_risk_modules"
+        ]
+        self.assertEqual(
+            [module["module_name"] for module in related_modules],
+            ["用户认证模块"],
+        )
+
+    def test_attack_tree_schema_rejects_empty_attack_trees(self):
+        with self.assertRaisesRegex(OutputValidationError, "expected at least 1 items"):
+            parse_json_output_for_schema('{"attack_trees": []}', ATTACK_TREE_SCHEMA)
+
+    def test_attack_tree_resume_retries_existing_empty_output(self):
+        submitted_task_ids = []
+
+        def submit_tasks(tasks, *, timeout=None):
+            submitted_task_ids.extend(task["task_id"] for task in tasks)
+            return [task_result(task, attack_tree_output()) for task in tasks]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = ThreatAnalysisLayout.for_run(tmp, "run-001")
+            layout.ensure()
+            stale_output = layout.attack_trees_raw_dir / "attack-tree-by-asset-001.json"
+            stale_output.write_text('{"attack_trees": []}\n', encoding="utf-8")
+
+            stage = AttackTreeStage(submit_tasks=submit_tasks, layout=layout)
+            result = stage.run(
+                value_assets=VALUE_ASSETS,
+                high_risk_modules=HIGH_RISK_MODULES,
+                resume=True,
+            )
+
+        self.assertEqual(submitted_task_ids, ["attack-tree-by-asset-001"])
+        self.assertEqual(len(result["attack_trees"]), 1)
 
     def test_resume_reads_existing_json_without_schema_validation(self):
         with tempfile.TemporaryDirectory() as tmp:

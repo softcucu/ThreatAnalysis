@@ -7,10 +7,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Protocol, Sequence
 
-from agent_runtime.errors import OutputValidationError
-from agent_runtime.output_validation import validate_json_schema
-
-from threat_analysis_harness.errors import StageExecutionError
+from threat_analysis_harness.errors import (
+    OutputSchemaValidationError,
+    StageExecutionError,
+)
+from threat_analysis_harness.output_validation import validate_json_schema
 
 TaskJson = Dict[str, Any]
 TaskResultJson = Dict[str, Any]
@@ -170,6 +171,6 @@ def _matches_task_output_schema(output: Any, task: TaskJson) -> bool:
         return True
     try:
         validate_json_schema(output, schema)
-    except OutputValidationError:
+    except OutputSchemaValidationError:
         return False
     return True

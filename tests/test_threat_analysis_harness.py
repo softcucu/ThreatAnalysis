@@ -5,13 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_runtime.errors import OutputValidationError
-from agent_runtime.output_validation import parse_json_output_for_schema
 from threat_analysis_harness import (
     ThreatAnalysisLayout,
     ThreatAnalysisPipeline,
     run_threat_analysis,
 )
+from threat_analysis_harness.errors import OutputSchemaValidationError
+from threat_analysis_harness.output_validation import validate_json_schema
 from threat_analysis_harness.schemas import (
     ATTACK_TREE_SCHEMA,
     HIGH_RISK_MODULES_SCHEMA,
@@ -379,8 +379,11 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
         )
 
     def test_attack_tree_schema_rejects_empty_attack_trees(self):
-        with self.assertRaisesRegex(OutputValidationError, "expected at least 1 items"):
-            parse_json_output_for_schema('{"attack_trees": []}', ATTACK_TREE_SCHEMA)
+        with self.assertRaisesRegex(
+            OutputSchemaValidationError,
+            "expected at least 1 items",
+        ):
+            validate_json_schema({"attack_trees": []}, ATTACK_TREE_SCHEMA)
 
     def test_attack_tree_resume_retries_existing_empty_output(self):
         submitted_task_ids = []

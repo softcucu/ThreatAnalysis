@@ -79,6 +79,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 攻击树阶段会按最终价值资产逐个启动任务。每个攻击树任务只分析 runtime prompt 中的当前价值资产，并直接读取 `high_risk_modules/final/high-risk-module-merge.json` 中的完整最终高风险模块列表，不再生成重复的 `task_inputs` 文件。合并攻击树前会执行一致性对齐：价值资产名称、根节点、叶子节点和 `related_high_risk_modules` 都必须能和最终产物关联；内部节点不能匹配最终高风险模块时会按普通内部节点保留。攻击树 schema 要求非空树、非空边和非空攻击路径，resume 时会对攻击树 raw 输出重新跑 schema 校验，空树不会被当作成功产物复用。
 
+攻击树 raw 任务使用程序根据最终高风险模块生成的稳定 `module_id` 和动态 schema
+进行内部引用；最终公开攻击树产物写入前会移除 `module_id`，因此对外 JSON 结构不变。
+旧的、不包含内部 `module_id` 的攻击树 raw 输出不兼容，`resume` 时应重新执行对应任务。
+
 ## 重要约定
 
 - Agent 任务会携带 `src/threat_analysis_harness/schemas.py` 中对应业务 schema；JSON 提取、schema 校验、同会话修正和规范化写入由 `task_agent` 与 `TaskAgentSubmitter` 协作完成。

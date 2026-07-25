@@ -1,3 +1,4 @@
+import copy
 import io
 import json
 import tempfile
@@ -19,6 +20,7 @@ from threat_analysis_harness.schemas import (
 )
 from threat_analysis_harness.stages.attack_trees import (
     AttackTreeStage,
+    _stable_high_risk_module_id,
     normalize_attack_tree_output,
 )
 from threat_analysis_harness.stages.base import existing_success_result
@@ -60,6 +62,7 @@ def attack_tree_output(
     asset_name: str = "用户个人数据",
     high_risk_module_name: str = "用户认证模块",
 ):
+    high_risk_module_id = _stable_high_risk_module_id(HIGH_RISK_MODULES[0])
     return {
         "attack_trees": [
             {
@@ -77,6 +80,7 @@ def attack_tree_output(
                         "node_name": f"攻击价值资产：{asset_name}",
                         "description": "导致用户个人数据泄露或被越权使用。",
                         "module_name": None,
+                        "module_id": None,
                         "is_high_risk_module": False,
                         "external_exposure": False,
                         "external_interface_description": None,
@@ -87,6 +91,7 @@ def attack_tree_output(
                         "node_name": high_risk_module_name,
                         "description": "处理外部登录请求和凭据。",
                         "module_name": high_risk_module_name,
+                        "module_id": high_risk_module_id,
                         "is_high_risk_module": True,
                         "external_exposure": True,
                         "external_interface_description": "登录接口接收外部 HTTP 请求。",
@@ -97,6 +102,7 @@ def attack_tree_output(
                         "node_name": "用户资料处理组件",
                         "description": "读取和整理用户资料供认证流程使用。",
                         "module_name": "用户资料处理组件",
+                        "module_id": None,
                         "is_high_risk_module": False,
                         "external_exposure": False,
                         "external_interface_description": None,
@@ -127,6 +133,7 @@ def attack_tree_output(
                         "path_description": "用户认证模块 -> 用户资料处理组件 -> 攻击价值资产：用户个人数据",
                         "related_high_risk_modules": [
                             {
+                                "module_id": high_risk_module_id,
                                 "module_name": high_risk_module_name,
                                 "node_id": "L-001",
                                 "external_exposure": True,
@@ -218,7 +225,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                     continue
                 if task["task_type"] == "attack_tree_by_asset":
                     self.assertEqual(task["skill_name"], "attack-tree-by-asset")
-                    self.assertIs(task["output_schema"], ATTACK_TREE_SCHEMA)
+                    self.assertIsNot(task["output_schema"], ATTACK_TREE_SCHEMA)
                     high_risk_modules_file = next(
                         path
                         for path in task["input_files"]
@@ -226,6 +233,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                     )
                     self.assertIn(high_risk_modules_file, prompt)
                     self.assertIn('"资产名": "用户个人数据"', prompt)
+                    self.assertIn(_stable_high_risk_module_id(HIGH_RISK_MODULES[0]), prompt)
                     self.assertEqual(
                         json.loads(
                             Path(high_risk_modules_file).read_text(encoding="utf-8")
@@ -240,7 +248,7 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                             task,
                             attack_tree_output(
                                 asset_name="用户资料数据",
-                                high_risk_module_name=" 用户认证模块 ",
+                                high_risk_module_name="认证入口别名",
                             ),
                         )
                     )
@@ -280,10 +288,13 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             nodes_by_id = {node["node_id"]: node for node in attack_tree["nodes"]}
             self.assertEqual(nodes_by_id["R-001"]["node_name"], "攻击价值资产：用户个人数据")
             self.assertEqual(nodes_by_id["L-001"]["module_name"], "用户认证模块")
+            self.assertNotIn("module_id", nodes_by_id["L-001"])
             self.assertEqual(nodes_by_id["I-001"]["module_name"], "用户资料处理组件")
             self.assertFalse(nodes_by_id["I-001"]["is_high_risk_module"])
             related_modules = attack_tree["attack_paths"][0]["related_high_risk_modules"]
             self.assertEqual(related_modules[0]["module_name"], "用户认证模块")
+            self.assertNotIn("module_id", related_modules[0])
+            validate_json_schema(result.attack_trees, ATTACK_TREE_SCHEMA)
             final_value_assets = (
                 Path(tmp) / "runs" / "run-001" / "value_assets" / "final" / "value-assets.json"
             )
@@ -394,6 +405,56 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
         ):
             validate_json_schema({"attack_trees": []}, ATTACK_TREE_SCHEMA)
 
+    def test_attack_tree_task_schema_rejects_unknown_module_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = AttackTreeStage(
+                submit_tasks=lambda tasks, timeout=None: [],
+                layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
+            )
+            task = stage.build_tasks(
+                value_assets=VALUE_ASSETS,
+                high_risk_modules=HIGH_RISK_MODULES,
+                high_risk_modules_file="high-risk-modules.json",
+            )[0]
+            output = attack_tree_output()
+            output["attack_trees"][0]["nodes"][1]["module_id"] = "hrm-unknown"
+
+            with self.assertRaisesRegex(
+                OutputSchemaValidationError,
+                "oneOf",
+            ):
+                validate_json_schema(output, task["output_schema"])
+
+    def test_attack_tree_task_schema_rejects_leaf_without_module_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = AttackTreeStage(
+                submit_tasks=lambda tasks, timeout=None: [],
+                layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
+            )
+            task = stage.build_tasks(
+                value_assets=VALUE_ASSETS,
+                high_risk_modules=HIGH_RISK_MODULES,
+                high_risk_modules_file="high-risk-modules.json",
+            )[0]
+            output = attack_tree_output()
+            output["attack_trees"][0]["nodes"][1]["module_id"] = None
+
+            with self.assertRaisesRegex(
+                OutputSchemaValidationError,
+                "oneOf",
+            ):
+                validate_json_schema(output, task["output_schema"])
+
+    def test_stable_high_risk_module_id_normalizes_name_and_code_paths(self):
+        equivalent_module = copy.deepcopy(HIGH_RISK_MODULES[0])
+        equivalent_module["模块名称"] = " 用户认证模块 "
+        equivalent_module["代码目录"] = ["src\\auth\\", "src/auth/"]
+
+        self.assertEqual(
+            _stable_high_risk_module_id(equivalent_module),
+            _stable_high_risk_module_id(HIGH_RISK_MODULES[0]),
+        )
+
     def test_attack_tree_resume_retries_existing_empty_output(self):
         submitted_task_ids = []
 
@@ -406,6 +467,39 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             layout.ensure()
             stale_output = layout.attack_trees_raw_dir / "attack-tree-by-asset-001.json"
             stale_output.write_text('{"attack_trees": []}\n', encoding="utf-8")
+
+            stage = AttackTreeStage(submit_tasks=submit_tasks, layout=layout)
+            result = stage.run(
+                value_assets=VALUE_ASSETS,
+                high_risk_modules=HIGH_RISK_MODULES,
+                resume=True,
+            )
+
+        self.assertEqual(submitted_task_ids, ["attack-tree-by-asset-001"])
+        self.assertEqual(len(result["attack_trees"]), 1)
+
+    def test_attack_tree_resume_retries_output_without_internal_module_ids(self):
+        submitted_task_ids = []
+
+        def submit_tasks(tasks, *, timeout=None):
+            submitted_task_ids.extend(task["task_id"] for task in tasks)
+            return [task_result(task, attack_tree_output()) for task in tasks]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = ThreatAnalysisLayout.for_run(tmp, "run-001")
+            layout.ensure()
+            old_output = attack_tree_output()
+            for node in old_output["attack_trees"][0]["nodes"]:
+                node.pop("module_id")
+            for related in old_output["attack_trees"][0]["attack_paths"][0][
+                "related_high_risk_modules"
+            ]:
+                related.pop("module_id")
+            stale_output = layout.attack_trees_raw_dir / "attack-tree-by-asset-001.json"
+            stale_output.write_text(
+                json.dumps(old_output, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
 
             stage = AttackTreeStage(submit_tasks=submit_tasks, layout=layout)
             result = stage.run(

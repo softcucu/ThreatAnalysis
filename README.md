@@ -99,6 +99,11 @@ runs/<run_id>/attack_trees/final/attack_trees.json
 - 内部节点如果不能匹配最终高风险模块，会按普通内部节点保留；即使模型误标 `is_high_risk_module=true`，也会降级为 `false`。
 - `related_high_risk_modules` 中的模块名会对齐为最终高风险模块的规范 `模块名称`。
 - 攻击路径中漏列的高风险节点会补入 `related_high_risk_modules`。
+- 攻击树任务过程中会为最终高风险模块生成稳定的内部 `module_id`，动态 schema
+  只允许引用本次模块目录中的 ID；叶子节点和 `related_high_risk_modules` 优先通过
+  ID 对齐，模型使用别名或名称格式差异时仍会回填规范模块名称。
+- `module_id` 只存在于攻击树 raw 任务输出，合并最终产物前会移除，因此最终
+  高风险模块和攻击树 JSON 的公开字段及结构保持不变。
 - 攻击树输出必须至少包含一棵树、一条边和一条攻击路径；空攻击树会在 schema 校验阶段失败并触发任务修正/重试，resume 时也不会复用。
 
 普通内部节点可以是攻击树分析过程中基于代码新识别出的内部模块，不要求出现在最终高风险模块列表中。只有作为叶子节点，或出现在 `related_high_risk_modules` 中的模块，才必须来自最终高风险模块列表。

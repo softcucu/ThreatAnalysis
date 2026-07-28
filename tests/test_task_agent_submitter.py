@@ -4,10 +4,24 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from threat_analysis_harness.task_agent_submitter import TaskAgentSubmitter
+from threat_analysis_harness.task_agent_submitter import (
+    TaskAgentSubmitter,
+    build_task_agent_prompt,
+)
 
 
 class TaskAgentSubmitterTests(unittest.TestCase):
+    def test_same_session_continuation_can_skip_skill_invocation(self):
+        prompt = build_task_agent_prompt(
+            {
+                "skill_name": "attack-tree-by-asset",
+                "runtime_prompt": "请修正攻击树并重新输出。",
+                "invoke_skill": False,
+            }
+        )
+
+        self.assertEqual(prompt, "请修正攻击树并重新输出。")
+
     def test_submitter_maps_harness_task_to_task_agent_and_writes_output(self):
         calls = []
 
@@ -22,7 +36,11 @@ class TaskAgentSubmitterTests(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory() as tmp:
-            task = _task(tmp, required_capability="low")
+            task = _task(
+                tmp,
+                required_capability="low",
+                session_id="existing-session-001",
+            )
             submitter = TaskAgentSubmitter(
                 config_path=Path(tmp) / "task-agent.yaml",
                 invalid_json_retry_count=3,
@@ -48,6 +66,7 @@ class TaskAgentSubmitterTests(unittest.TestCase):
         self.assertEqual(call["task_type"], "threat_analysis")
         self.assertEqual(call["required_capability"], "low")
         self.assertEqual(call["invalid_json_retry_count"], 3)
+        self.assertEqual(call["session_id"], "existing-session-001")
         self.assertEqual(call["output_schema"], {"type": "array"})
         self.assertEqual(call["prompt"], "/unit-skill\n\nRuntime prompt")
         self.assertIn("Runtime prompt", call["prompt"])

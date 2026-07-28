@@ -77,7 +77,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 高风险模块阶段会按五类高风险特征拆分 map 任务，并通过单独的 merge 任务合并候选模块。
 
-攻击树阶段会按最终价值资产逐个启动任务。每个攻击树任务只分析 runtime prompt 中的当前价值资产，并直接读取 `high_risk_modules/final/high-risk-module-merge.json` 中的完整最终高风险模块列表，不再生成重复的 `task_inputs` 文件。合并攻击树前会执行一致性对齐：价值资产名称、根节点、叶子节点和 `related_high_risk_modules` 都必须能和最终产物关联；内部节点不能匹配最终高风险模块时会按普通内部节点保留。攻击树 schema 要求非空树、非空边和非空攻击路径，resume 时会对攻击树 raw 输出重新跑 schema 校验，空树不会被当作成功产物复用。
+攻击树阶段会按最终价值资产逐个启动任务。每个攻击树任务只分析 runtime prompt 中的当前价值资产，并直接读取 `high_risk_modules/final/high-risk-module-merge.json` 中的完整最终高风险模块列表，不再生成重复的 `task_inputs` 文件。单任务完成后会校验叶子节点是否引用外部暴露高风险模块；命中非外部暴露模块时，使用原 `session_id` 同会话修正一次，再次命中则裁剪对应路径及未使用节点、边，全部路径被裁剪的树不会参与最终合并。合并攻击树前会执行一致性对齐：价值资产名称、根节点、叶子节点和 `related_high_risk_modules` 都必须能和最终产物关联；内部节点不能匹配最终高风险模块时会按普通内部节点保留。攻击树 schema 要求模型原始输出包含非空树、非空边和非空攻击路径，resume 时会对攻击树 raw 输出重新跑 schema 校验，原始空树不会被当作成功产物复用。
 
 攻击树 raw 任务使用程序根据最终高风险模块生成的稳定 `module_id` 和动态 schema
 进行内部引用；最终公开攻击树产物写入前会移除 `module_id`，因此对外 JSON 结构不变。
@@ -87,7 +87,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 - Agent 任务会携带 `src/threat_analysis_harness/schemas.py` 中对应业务 schema；JSON 提取、schema 校验、同会话修正和规范化写入由 `task_agent` 与 `TaskAgentSubmitter` 协作完成。
 - `task_agent.run_opencode_task()` 会在传入 `output_schema` 时追加 JSON 输出约束；业务 harness 不直接拼接 runtime 指令。
-- `TaskAgentSubmitter` 不读取或内联 `SKILL.md`；skill 由 `task-agent.yaml` 的 `serve.opencode_config.skills.paths` 提供，适配器只在 prompt 中使用 `/skill-name` 调用。
+- `TaskAgentSubmitter` 不读取或内联 `SKILL.md`；skill 由 `task-agent.yaml` 的 `serve.opencode_config.skills.paths` 提供。初始任务在 prompt 中使用 `/skill-name` 调用；已经加载 skill 的同会话业务修正任务可设置 `invoke_skill=false`，直接追加修正提示。
 - 包内命令行入口只调用 `run_threat_analysis()`；第三方接口当前接收单个 `code_path` 和 `output_path`，通过 `is_resume=True` 或命令行 `--resume` 复用同一 `output_path` 下已有任务 JSON 输出。
 - harness 业务 `task_type` 保持原值；提交给 task_agent 时默认映射为公开 API 支持的 `task_type="threat_analysis"`。
 - 模型选择、能力等级和并发由 `task-agent.yaml` 的 `model_pool` 控制。

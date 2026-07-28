@@ -57,6 +57,15 @@ HIGH_RISK_MODULES = [
 ]
 
 
+NON_EXTERNAL_HIGH_RISK_MODULE = {
+    **HIGH_RISK_MODULES[0],
+    "模块名称": "内部会话处理模块",
+    "代码目录": "src/session",
+    "是否外部暴露面": "否",
+    "判断为高风险模块的原因": "src/session 仅由内部认证流程调用，不直接接收外部输入。",
+}
+
+
 def attack_tree_output(
     *,
     asset_name: str = "用户个人数据",
@@ -155,6 +164,63 @@ def attack_tree_output(
     }
 
 
+def attack_tree_output_with_non_external_leaf(*, keep_valid_path: bool):
+    output = attack_tree_output()
+    tree = output["attack_trees"][0]
+    module_id = _stable_high_risk_module_id(NON_EXTERNAL_HIGH_RISK_MODULE)
+    invalid_leaf = {
+        "node_id": "L-002",
+        "node_type": "叶子节点",
+        "node_name": "内部会话处理模块",
+        "description": "处理内部会话状态。",
+        "module_name": "内部会话处理模块",
+        "module_id": module_id,
+        "is_high_risk_module": True,
+        "external_exposure": True,
+        "external_interface_description": "模型错误地将内部调用判断为外部入口。",
+    }
+    invalid_related_module = {
+        "module_id": module_id,
+        "module_name": "内部会话处理模块",
+        "node_id": "L-002",
+        "external_exposure": True,
+        "path_role": "外部攻击入口",
+        "association_description": "模型错误地将内部模块关联为外部攻击入口。",
+    }
+
+    if keep_valid_path:
+        tree["nodes"].append(invalid_leaf)
+        tree["edges"].append(
+            {
+                "edge_id": "E-003",
+                "source_node_id": "L-002",
+                "target_node_id": "I-001",
+                "influence_type": "调用",
+                "description": "内部会话处理模块调用用户资料处理组件。",
+            }
+        )
+        tree["attack_paths"].append(
+            {
+                "path_id": "AP-002",
+                "path_name": "错误的内部会话入口路径",
+                "node_ids": ["L-002", "I-001", "R-001"],
+                "edge_ids": ["E-003", "E-002"],
+                "path_description": "内部会话处理模块 -> 用户资料处理组件 -> 攻击价值资产：用户个人数据",
+                "related_high_risk_modules": [invalid_related_module],
+                "attack_patterns": [],
+            }
+        )
+        return output
+
+    tree["nodes"][1] = invalid_leaf
+    tree["edges"][0]["source_node_id"] = "L-002"
+    tree["attack_paths"][0]["node_ids"][0] = "L-002"
+    tree["attack_paths"][0]["related_high_risk_modules"] = [
+        invalid_related_module
+    ]
+    return output
+
+
 class ProgressRecorder:
     def __init__(self, stream: io.StringIO):
         self.stream = stream
@@ -179,6 +245,16 @@ def task_result(task, output):
         "output": output,
         "metadata": dict(task.get("metadata", {})),
     }
+
+
+def task_result_with_session(task, output, session_id):
+    result = task_result(task, output)
+    result["metadata"]["task_agent"] = {
+        "session_id": session_id,
+        "task_type": "threat_analysis",
+        "status": "success",
+    }
+    return result
 
 
 class ThreatAnalysisPipelineTests(unittest.TestCase):
@@ -234,6 +310,10 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
                     self.assertIn(high_risk_modules_file, prompt)
                     self.assertIn('"资产名": "用户个人数据"', prompt)
                     self.assertIn(_stable_high_risk_module_id(HIGH_RISK_MODULES[0]), prompt)
+                    self.assertIn(
+                        "叶子节点只能引用引用目录中 external_exposure=true 的 module_id",
+                        prompt,
+                    )
                     self.assertEqual(
                         json.loads(
                             Path(high_risk_modules_file).read_text(encoding="utf-8")
@@ -397,6 +477,150 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             [module["module_name"] for module in related_modules],
             ["用户认证模块"],
         )
+
+    def test_attack_tree_repairs_non_external_leaf_in_same_session(self):
+        submitted_batches = []
+
+        def submit_tasks(tasks, *, timeout=None):
+            submitted_batches.append(tasks)
+            task = tasks[0]
+            if len(submitted_batches) == 1:
+                return [
+                    task_result_with_session(
+                        task,
+                        attack_tree_output_with_non_external_leaf(
+                            keep_valid_path=False
+                        ),
+                        "session-attack-tree-001",
+                    )
+                ]
+            self.assertEqual(task["session_id"], "session-attack-tree-001")
+            self.assertIs(task["invoke_skill"], False)
+            self.assertIn(
+                "叶子节点“内部会话处理模块”",
+                task["runtime_prompt"],
+            )
+            self.assertIn(
+                "引用了非外部暴露的高风险模块",
+                task["runtime_prompt"],
+            )
+            self.assertIn(
+                "叶子节点只能是外部暴露的高风险模块",
+                task["runtime_prompt"],
+            )
+            self.assertIn(
+                "按照 JSON Schema 重新输出完整的攻击树 JSON",
+                task["runtime_prompt"],
+            )
+            return [
+                task_result_with_session(
+                    task,
+                    attack_tree_output(),
+                    "session-attack-tree-001",
+                )
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = AttackTreeStage(
+                submit_tasks=submit_tasks,
+                layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
+            )
+            result = stage.run(
+                value_assets=VALUE_ASSETS,
+                high_risk_modules=[
+                    HIGH_RISK_MODULES[0],
+                    NON_EXTERNAL_HIGH_RISK_MODULE,
+                ],
+            )
+
+        self.assertEqual(len(submitted_batches), 2)
+        self.assertEqual(len(result["attack_trees"]), 1)
+        self.assertEqual(
+            result["attack_trees"][0]["nodes"][1]["module_name"],
+            "用户认证模块",
+        )
+
+    def test_attack_tree_prunes_repeated_non_external_leaf_path(self):
+        submitted_batches = []
+        progress_stream = io.StringIO()
+
+        def submit_tasks(tasks, *, timeout=None):
+            submitted_batches.append(tasks)
+            return [
+                task_result_with_session(
+                    tasks[0],
+                    attack_tree_output_with_non_external_leaf(
+                        keep_valid_path=True
+                    ),
+                    "session-attack-tree-002",
+                )
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = ThreatAnalysisLayout.for_run(tmp, "run-001")
+            stage = AttackTreeStage(submit_tasks=submit_tasks, layout=layout)
+            result = stage.run(
+                value_assets=VALUE_ASSETS,
+                high_risk_modules=[
+                    HIGH_RISK_MODULES[0],
+                    NON_EXTERNAL_HIGH_RISK_MODULE,
+                ],
+                progress_reporter=ProgressRecorder(progress_stream),
+            )
+            raw_output = json.loads(
+                (
+                    layout.attack_trees_raw_dir
+                    / "attack-tree-by-asset-001.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(len(submitted_batches), 2)
+        tree = result["attack_trees"][0]
+        self.assertEqual(
+            [path["path_id"] for path in tree["attack_paths"]],
+            ["AP-001"],
+        )
+        self.assertNotIn("L-002", {node["node_id"] for node in tree["nodes"]})
+        self.assertNotIn("E-003", {edge["edge_id"] for edge in tree["edges"]})
+        self.assertEqual(
+            [path["path_id"] for path in raw_output["attack_trees"][0]["attack_paths"]],
+            ["AP-001"],
+        )
+        self.assertIn(
+            "attack tree non-external leaf paths pruned",
+            progress_stream.getvalue(),
+        )
+
+    def test_attack_tree_drops_tree_when_all_paths_keep_invalid_leaf(self):
+        submitted_batches = []
+
+        def submit_tasks(tasks, *, timeout=None):
+            submitted_batches.append(tasks)
+            return [
+                task_result_with_session(
+                    tasks[0],
+                    attack_tree_output_with_non_external_leaf(
+                        keep_valid_path=False
+                    ),
+                    "session-attack-tree-003",
+                )
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = AttackTreeStage(
+                submit_tasks=submit_tasks,
+                layout=ThreatAnalysisLayout.for_run(tmp, "run-001"),
+            )
+            result = stage.run(
+                value_assets=VALUE_ASSETS,
+                high_risk_modules=[
+                    HIGH_RISK_MODULES[0],
+                    NON_EXTERNAL_HIGH_RISK_MODULE,
+                ],
+            )
+
+        self.assertEqual(len(submitted_batches), 2)
+        self.assertEqual(result, {"attack_trees": []})
 
     def test_attack_tree_schema_rejects_empty_attack_trees(self):
         with self.assertRaisesRegex(

@@ -478,6 +478,35 @@ class ThreatAnalysisPipelineTests(unittest.TestCase):
             ["用户认证模块"],
         )
 
+    def test_attack_tree_aligns_related_module_id_to_its_node(self):
+        other_module = {
+            **HIGH_RISK_MODULES[0],
+            "模块名称": "其他外部接口模块",
+            "代码目录": "src/external-api",
+        }
+        output = attack_tree_output()
+        related = output["attack_trees"][0]["attack_paths"][0][
+            "related_high_risk_modules"
+        ][0]
+        related["module_id"] = _stable_high_risk_module_id(other_module)
+        related["module_name"] = "其他外部接口模块"
+
+        normalized = normalize_attack_tree_output(
+            output,
+            value_asset=VALUE_ASSETS[0],
+            high_risk_modules=[HIGH_RISK_MODULES[0], other_module],
+        )
+
+        tree = normalized["attack_trees"][0]
+        nodes_by_id = {node["node_id"]: node for node in tree["nodes"]}
+        self.assertEqual(nodes_by_id["L-001"]["module_name"], "用户认证模块")
+        related_modules = tree["attack_paths"][0]["related_high_risk_modules"]
+        self.assertEqual(
+            [module["module_name"] for module in related_modules],
+            ["用户认证模块"],
+        )
+        self.assertNotIn("module_id", related_modules[0])
+
     def test_attack_tree_repairs_non_external_leaf_in_same_session(self):
         submitted_batches = []
 
